@@ -19,3 +19,6 @@
 [submodule "deps/mman"]
 	path = deps/mman
 	url = https://github.com/witwall/mman-win32
+[submodule "frontend/libpicofe"]
+	url = https://github.com/AutoBleem-NG/libpicofe-psc.git
+	branch = psc-autobleem
