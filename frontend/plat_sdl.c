@@ -1,11 +1,20 @@
 /*
  * (C) Gražvydas "notaz" Ignotas, 2011-2013
  *
+ * PlayStation Classic (PSC) SDL2 port for AutoBleem-NG
+ * (C) 2025 AutoBleem-NG Team
+ *
  * This work is licensed under the terms of any of these licenses
  * (at your option):
  *  - GNU GPL, version 2 or later.
  *  - GNU LGPL, version 2.1 or later.
  * See the COPYING file in the top-level directory.
+ *
+ * PSC-specific changes from upstream pcsx_rearmed:
+ * - SDL2 API: Replaces SDL1 with SDL2 (SDL_Window, SDL_Renderer, SDL_Texture)
+ * - Wayland: Native Wayland/EGL/GLES rendering via libpicofe-psc
+ * - Input: PSC controllers are USB HID joysticks (buttons 0-9 -> 0xF0-0xF9)
+ * - Video: Fullscreen via SDL_WINDOW_FULLSCREEN_DESKTOP on Wayland
  */
 
 #include <stdio.h>
@@ -26,101 +35,121 @@
 #include "menu.h"
 #include "main.h"
 #include "plat.h"
+#include "psc_input.h"
 #include "revision.h"
 
+// Include the SDL2-ported plat_sdl.c implementation
 #include "libpicofe/plat_sdl.c"
+
+// SDL2 compatibility - define SDLK_JOY_BASE for joystick button keycodes
+#define SDLK_JOY_BASE 400
+#define SDLK_JOY_BUTTON(n) (SDLK_JOY_BASE + (n))
 
 #ifdef MIYOO
 static const struct in_default_bind in_sdl_defbinds[] = {
-  { SDLK_UP,        IN_BINDTYPE_PLAYER12, DKEY_UP },
-  { SDLK_DOWN,      IN_BINDTYPE_PLAYER12, DKEY_DOWN },
-  { SDLK_LEFT,      IN_BINDTYPE_PLAYER12, DKEY_LEFT },
-  { SDLK_RIGHT,     IN_BINDTYPE_PLAYER12, DKEY_RIGHT },
-  { SDLK_LSHIFT,    IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
-  { SDLK_LCTRL,     IN_BINDTYPE_PLAYER12, DKEY_CROSS },
-  { SDLK_LALT,      IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
-  { SDLK_SPACE,     IN_BINDTYPE_PLAYER12, DKEY_SQUARE },
-  { SDLK_RETURN,    IN_BINDTYPE_PLAYER12, DKEY_START },
-  { SDLK_ESCAPE,    IN_BINDTYPE_PLAYER12, DKEY_SELECT },
-  { SDLK_TAB,       IN_BINDTYPE_PLAYER12, DKEY_L1 },
-  { SDLK_BACKSPACE, IN_BINDTYPE_PLAYER12, DKEY_R1 },
-  { SDLK_PAGEUP,    IN_BINDTYPE_PLAYER12, DKEY_L2 },
-  { SDLK_PAGEDOWN,  IN_BINDTYPE_PLAYER12, DKEY_R2 },
-  { SDLK_RALT,      IN_BINDTYPE_PLAYER12, DKEY_L3 },
-  { SDLK_RSHIFT,    IN_BINDTYPE_PLAYER12, DKEY_R3 },
-  { SDLK_RCTRL,     IN_BINDTYPE_EMU, SACTION_ENTER_MENU },
+  { SDL_SCANCODE_UP,        IN_BINDTYPE_PLAYER12, DKEY_UP },
+  { SDL_SCANCODE_DOWN,      IN_BINDTYPE_PLAYER12, DKEY_DOWN },
+  { SDL_SCANCODE_LEFT,      IN_BINDTYPE_PLAYER12, DKEY_LEFT },
+  { SDL_SCANCODE_RIGHT,     IN_BINDTYPE_PLAYER12, DKEY_RIGHT },
+  { SDL_SCANCODE_LSHIFT,    IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
+  { SDL_SCANCODE_LCTRL,     IN_BINDTYPE_PLAYER12, DKEY_CROSS },
+  { SDL_SCANCODE_LALT,      IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
+  { SDL_SCANCODE_SPACE,     IN_BINDTYPE_PLAYER12, DKEY_SQUARE },
+  { SDL_SCANCODE_RETURN,    IN_BINDTYPE_PLAYER12, DKEY_START },
+  { SDL_SCANCODE_ESCAPE,    IN_BINDTYPE_PLAYER12, DKEY_SELECT },
+  { SDL_SCANCODE_TAB,       IN_BINDTYPE_PLAYER12, DKEY_L1 },
+  { SDL_SCANCODE_BACKSPACE, IN_BINDTYPE_PLAYER12, DKEY_R1 },
+  { SDL_SCANCODE_PAGEUP,    IN_BINDTYPE_PLAYER12, DKEY_L2 },
+  { SDL_SCANCODE_PAGEDOWN,  IN_BINDTYPE_PLAYER12, DKEY_R2 },
+  { SDL_SCANCODE_RALT,      IN_BINDTYPE_PLAYER12, DKEY_L3 },
+  { SDL_SCANCODE_RSHIFT,    IN_BINDTYPE_PLAYER12, DKEY_R3 },
+  { SDL_SCANCODE_RCTRL,     IN_BINDTYPE_EMU, SACTION_ENTER_MENU },
   { 0, 0, 0 }
 };
 
 const struct menu_keymap in_sdl_key_map[] =
 {
-  { SDLK_UP,        PBTN_UP },
-  { SDLK_DOWN,      PBTN_DOWN },
-  { SDLK_LEFT,      PBTN_LEFT },
-  { SDLK_RIGHT,     PBTN_RIGHT },
-  { SDLK_LALT,      PBTN_MOK },
-  { SDLK_LCTRL,     PBTN_MBACK },
-  { SDLK_SPACE,     PBTN_MA2 },
-  { SDLK_LSHIFT,    PBTN_MA3 },
-  { SDLK_TAB,       PBTN_L },
-  { SDLK_BACKSPACE, PBTN_R },
+  { SDL_SCANCODE_UP,        PBTN_UP },
+  { SDL_SCANCODE_DOWN,      PBTN_DOWN },
+  { SDL_SCANCODE_LEFT,      PBTN_LEFT },
+  { SDL_SCANCODE_RIGHT,     PBTN_RIGHT },
+  { SDL_SCANCODE_LALT,      PBTN_MOK },
+  { SDL_SCANCODE_LCTRL,     PBTN_MBACK },
+  { SDL_SCANCODE_SPACE,     PBTN_MA2 },
+  { SDL_SCANCODE_LSHIFT,    PBTN_MA3 },
+  { SDL_SCANCODE_TAB,       PBTN_L },
+  { SDL_SCANCODE_BACKSPACE, PBTN_R },
 };
 #else
 static const struct in_default_bind in_sdl_defbinds[] = {
-  { SDLK_UP,     IN_BINDTYPE_PLAYER12, DKEY_UP },
-  { SDLK_DOWN,   IN_BINDTYPE_PLAYER12, DKEY_DOWN },
-  { SDLK_LEFT,   IN_BINDTYPE_PLAYER12, DKEY_LEFT },
-  { SDLK_RIGHT,  IN_BINDTYPE_PLAYER12, DKEY_RIGHT },
-  { SDLK_d,      IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
-  { SDLK_z,      IN_BINDTYPE_PLAYER12, DKEY_CROSS },
-  { SDLK_x,      IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
-  { SDLK_s,      IN_BINDTYPE_PLAYER12, DKEY_SQUARE },
-  { SDLK_v,      IN_BINDTYPE_PLAYER12, DKEY_START },
-  { SDLK_c,      IN_BINDTYPE_PLAYER12, DKEY_SELECT },
-  { SDLK_w,      IN_BINDTYPE_PLAYER12, DKEY_L1 },
-  { SDLK_r,      IN_BINDTYPE_PLAYER12, DKEY_R1 },
-  { SDLK_e,      IN_BINDTYPE_PLAYER12, DKEY_L2 },
-  { SDLK_t,      IN_BINDTYPE_PLAYER12, DKEY_R2 },
-  { SDLK_ESCAPE, IN_BINDTYPE_EMU, SACTION_ENTER_MENU },
-  { SDLK_F1,     IN_BINDTYPE_EMU, SACTION_SAVE_STATE },
-  { SDLK_F2,     IN_BINDTYPE_EMU, SACTION_LOAD_STATE },
-  { SDLK_F3,     IN_BINDTYPE_EMU, SACTION_PREV_SSLOT },
-  { SDLK_F4,     IN_BINDTYPE_EMU, SACTION_NEXT_SSLOT },
-  { SDLK_F5,     IN_BINDTYPE_EMU, SACTION_TOGGLE_FSKIP },
-  { SDLK_F6,     IN_BINDTYPE_EMU, SACTION_SCREENSHOT },
-  { SDLK_F7,     IN_BINDTYPE_EMU, SACTION_TOGGLE_FPS },
-  { SDLK_F8,     IN_BINDTYPE_EMU, SACTION_SWITCH_DISPMODE },
-  { SDLK_F11,    IN_BINDTYPE_EMU, SACTION_TOGGLE_FULLSCREEN },
-  { SDLK_BACKSPACE, IN_BINDTYPE_EMU, SACTION_FAST_FORWARD },
+  /* Keyboard bindings */
+  { SDL_SCANCODE_UP,     IN_BINDTYPE_PLAYER12, DKEY_UP },
+  { SDL_SCANCODE_DOWN,   IN_BINDTYPE_PLAYER12, DKEY_DOWN },
+  { SDL_SCANCODE_LEFT,   IN_BINDTYPE_PLAYER12, DKEY_LEFT },
+  { SDL_SCANCODE_RIGHT,  IN_BINDTYPE_PLAYER12, DKEY_RIGHT },
+  { SDL_SCANCODE_D,      IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
+  { SDL_SCANCODE_Z,      IN_BINDTYPE_PLAYER12, DKEY_CROSS },
+  { SDL_SCANCODE_X,      IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
+  { SDL_SCANCODE_S,      IN_BINDTYPE_PLAYER12, DKEY_SQUARE },
+  { SDL_SCANCODE_V,      IN_BINDTYPE_PLAYER12, DKEY_START },
+  { SDL_SCANCODE_C,      IN_BINDTYPE_PLAYER12, DKEY_SELECT },
+  { SDL_SCANCODE_W,      IN_BINDTYPE_PLAYER12, DKEY_L1 },
+  { SDL_SCANCODE_R,      IN_BINDTYPE_PLAYER12, DKEY_R1 },
+  { SDL_SCANCODE_E,      IN_BINDTYPE_PLAYER12, DKEY_L2 },
+  { SDL_SCANCODE_T,      IN_BINDTYPE_PLAYER12, DKEY_R2 },
+  { SDL_SCANCODE_ESCAPE, IN_BINDTYPE_EMU, SACTION_ENTER_MENU },
+  { SDL_SCANCODE_F1,     IN_BINDTYPE_EMU, SACTION_SAVE_STATE },
+  { SDL_SCANCODE_F2,     IN_BINDTYPE_EMU, SACTION_LOAD_STATE },
+  { SDL_SCANCODE_F3,     IN_BINDTYPE_EMU, SACTION_PREV_SSLOT },
+  { SDL_SCANCODE_F4,     IN_BINDTYPE_EMU, SACTION_NEXT_SSLOT },
+  { SDL_SCANCODE_F5,     IN_BINDTYPE_EMU, SACTION_TOGGLE_FSKIP },
+  { SDL_SCANCODE_F6,     IN_BINDTYPE_EMU, SACTION_SCREENSHOT },
+  { SDL_SCANCODE_F7,     IN_BINDTYPE_EMU, SACTION_TOGGLE_FPS },
+  { SDL_SCANCODE_F8,     IN_BINDTYPE_EMU, SACTION_SWITCH_DISPMODE },
+  { SDL_SCANCODE_F11,    IN_BINDTYPE_EMU, SACTION_TOGGLE_FULLSCREEN },
+  { SDL_SCANCODE_BACKSPACE, IN_BINDTYPE_EMU, SACTION_FAST_FORWARD },
+  /* PlayStation Classic controller button bindings (see psc_input.h) */
+  { PSC_KEY_TRIANGLE, IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
+  { PSC_KEY_CIRCLE,   IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
+  { PSC_KEY_CROSS,    IN_BINDTYPE_PLAYER12, DKEY_CROSS },
+  { PSC_KEY_SQUARE,   IN_BINDTYPE_PLAYER12, DKEY_SQUARE },
+  { PSC_KEY_L2,       IN_BINDTYPE_PLAYER12, DKEY_L2 },
+  { PSC_KEY_R2,       IN_BINDTYPE_PLAYER12, DKEY_R2 },
+  { PSC_KEY_L1,       IN_BINDTYPE_PLAYER12, DKEY_L1 },
+  { PSC_KEY_R1,       IN_BINDTYPE_PLAYER12, DKEY_R1 },
+  { PSC_KEY_SELECT,   IN_BINDTYPE_PLAYER12, DKEY_SELECT },
+  { PSC_KEY_START,    IN_BINDTYPE_PLAYER12, DKEY_START },
+  /* Menu access via Select */
+  { PSC_KEY_SELECT,   IN_BINDTYPE_EMU, SACTION_ENTER_MENU },
   { 0, 0, 0 }
 };
 
 const struct menu_keymap in_sdl_key_map[] =
 {
-  { SDLK_UP,     PBTN_UP },
-  { SDLK_DOWN,   PBTN_DOWN },
-  { SDLK_LEFT,   PBTN_LEFT },
-  { SDLK_RIGHT,  PBTN_RIGHT },
-  { SDLK_RETURN, PBTN_MOK },
-  { SDLK_ESCAPE, PBTN_MBACK },
-  { SDLK_SEMICOLON,    PBTN_MA2 },
-  { SDLK_QUOTE,        PBTN_MA3 },
-  { SDLK_LEFTBRACKET,  PBTN_L },
-  { SDLK_RIGHTBRACKET, PBTN_R },
+  { SDL_SCANCODE_UP,     PBTN_UP },
+  { SDL_SCANCODE_DOWN,   PBTN_DOWN },
+  { SDL_SCANCODE_LEFT,   PBTN_LEFT },
+  { SDL_SCANCODE_RIGHT,  PBTN_RIGHT },
+  { SDL_SCANCODE_RETURN, PBTN_MOK },
+  { SDL_SCANCODE_ESCAPE, PBTN_MBACK },
+  { SDL_SCANCODE_SEMICOLON,    PBTN_MA2 },
+  { SDL_SCANCODE_APOSTROPHE,   PBTN_MA3 },
+  { SDL_SCANCODE_LEFTBRACKET,  PBTN_L },
+  { SDL_SCANCODE_RIGHTBRACKET, PBTN_R },
 };
 #endif
 
 const struct menu_keymap in_sdl_joy_map[] =
 {
-  { SDLK_UP,    PBTN_UP },
-  { SDLK_DOWN,  PBTN_DOWN },
-  { SDLK_LEFT,  PBTN_LEFT },
-  { SDLK_RIGHT, PBTN_RIGHT },
-  /* joystick */
-  { SDLK_WORLD_0, PBTN_MOK },
-  { SDLK_WORLD_1, PBTN_MBACK },
-  { SDLK_WORLD_2, PBTN_MA2 },
-  { SDLK_WORLD_3, PBTN_MA3 },
+  { SDL_SCANCODE_UP,    PBTN_UP },
+  { SDL_SCANCODE_DOWN,  PBTN_DOWN },
+  { SDL_SCANCODE_LEFT,  PBTN_LEFT },
+  { SDL_SCANCODE_RIGHT, PBTN_RIGHT },
+  /* PSC controller menu navigation (see psc_input.h) */
+  { PSC_MENU_OK,      PBTN_MOK },   /* Cross = OK */
+  { PSC_MENU_BACK,    PBTN_MBACK }, /* Circle = Back */
+  { PSC_MENU_ACTION2, PBTN_MA2 },   /* Square */
+  { PSC_MENU_ACTION3, PBTN_MA3 },   /* Triangle */
 };
 
 static const struct in_pdata in_sdl_platform_data = {
@@ -173,25 +202,28 @@ static void sdl_event_handler(void *event_)
   SDL_Event *event = event_;
 
   switch (event->type) {
-  case SDL_VIDEORESIZE:
-    if (window_w != (event->resize.w & ~3) || window_h != (event->resize.h & ~1)) {
-      window_w = event->resize.w & ~3;
-      window_h = event->resize.h & ~1;
-      resized = 1;
-      if (!in_menu && plat_sdl_gl_active && plugin_owns_display()) {
-        // the plugin flips by itself so resize has to be handled here
-        handle_window_resize();
-        if (GPU_open != NULL) {
-          int ret = GPU_open(&gpuDisp, "PCSX", NULL);
-          if (ret)
-            fprintf(stderr, "GPU_open: %d\n", ret);
+  case SDL_WINDOWEVENT:
+    if (event->window.event == SDL_WINDOWEVENT_RESIZED ||
+        event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+      int new_w = event->window.data1 & ~3;
+      int new_h = event->window.data2 & ~1;
+      if (window_w != new_w || window_h != new_h) {
+        window_w = new_w;
+        window_h = new_h;
+        resized = 1;
+        if (!in_menu && plat_sdl_gl_active && plugin_owns_display()) {
+          // the plugin flips by itself so resize has to be handled here
+          handle_window_resize();
+          if (GPU_open != NULL) {
+            int ret = GPU_open(&gpuDisp, "PCSX", NULL);
+            if (ret)
+              fprintf(stderr, "GPU_open: %d\n", ret);
+          }
         }
       }
     }
-    return;
-  case SDL_ACTIVEEVENT:
-    // no need to redraw?
-    return;
+    // SDL_WINDOWEVENT_FOCUS_GAINED/LOST handled in plat_sdl_event_handler
+    break;
   default:
     break;
   }
@@ -214,7 +246,7 @@ static void get_layer_pos(int *x, int *y, int *w, int *h)
 void plat_init(void)
 {
   static const char *hwfilters[] = { "linear", "nearest", NULL };
-  const SDL_version *ver;
+  SDL_version ver;
   int shadow_size;
   int ret;
 
@@ -226,12 +258,12 @@ void plat_init(void)
   if (ret != 0)
     exit(1);
 
-  ver = SDL_Linked_Version();
-  sdl12_compat = ver->patch >= 50;
-  printf("SDL %u.%u.%u compat=%d\n", ver->major, ver->minor, ver->patch, sdl12_compat);
+  SDL_GetVersion(&ver);
+  sdl12_compat = ver.patch >= 50;
+  printf("SDL %u.%u.%u compat=%d\n", ver.major, ver.minor, ver.patch, sdl12_compat);
 
   in_menu = 1;
-  SDL_WM_SetCaption("PCSX-ReARMed " REV, NULL);
+  SDL_SetWindowTitle(plat_sdl_window, "PCSX-ReARMed " REV);
 
   shadow_size = g_menuscreen_w * g_menuscreen_h * 2;
   // alloc enough for double res. rendering
@@ -310,19 +342,43 @@ static void overlay_resize(int force)
   if (!force && plat_sdl_overlay && w * x2_mul == plat_sdl_overlay->w
       && h == plat_sdl_overlay->h)
     return;
-  if (plat_sdl_overlay)
-    SDL_FreeYUVOverlay(plat_sdl_overlay);
-  plat_sdl_overlay = SDL_CreateYUVOverlay(w * x2_mul, h, SDL_UYVY_OVERLAY,
-        plat_sdl_screen);
+
+  // Free old overlay
   if (plat_sdl_overlay) {
-    //printf("overlay: %dx%d %08x hw=%d\n", plat_sdl_overlay->w, plat_sdl_overlay->h,
-    //    plat_sdl_overlay->format, plat_sdl_overlay->hw_overlay);
-    if (SDL_LockYUVOverlay(plat_sdl_overlay) == 0) {
+    free(plat_sdl_overlay->pixels[0]);
+    free(plat_sdl_overlay);
+    plat_sdl_overlay = NULL;
+  }
+
+  // Create new overlay
+  plat_sdl_overlay = calloc(1, sizeof(*plat_sdl_overlay));
+  if (plat_sdl_overlay) {
+    plat_sdl_overlay->w = w * x2_mul;
+    plat_sdl_overlay->h = h;
+    plat_sdl_overlay->format = SDL_PIXELFORMAT_UYVY;
+    plat_sdl_overlay->pitches[0] = w * x2_mul * 2;
+    plat_sdl_overlay->pixels[0] = malloc(w * x2_mul * h * 2);
+    plat_sdl_overlay->hw_overlay = 1;
+
+    if (plat_sdl_overlay->pixels[0]) {
+      // Create YUV texture
+      if (plat_sdl_texture)
+        SDL_DestroyTexture(plat_sdl_texture);
+      plat_sdl_texture = SDL_CreateTexture(plat_sdl_renderer,
+        SDL_PIXELFORMAT_UYVY, SDL_TEXTUREACCESS_STREAMING, w * x2_mul, h);
+
+      if ((uintptr_t)plat_sdl_overlay->pixels[0] & 3)
+        fprintf(stderr, "warning: overlay pointer is unaligned\n");
+
       plat_sdl_overlay_clear();
-      SDL_UnlockYUVOverlay(plat_sdl_overlay);
+    }
+    else {
+      free(plat_sdl_overlay);
+      plat_sdl_overlay = NULL;
     }
   }
-  else {
+
+  if (!plat_sdl_overlay) {
     fprintf(stderr, "overlay resize to %dx%d failed\n", w, h);
     plat_target.vout_method = 0;
   }
@@ -337,7 +393,6 @@ static void overlay_blit(int doffs, const void *src_, int w, int h,
   int dstride = plat_sdl_overlay->w;
   int x2 = dstride >= 2 * w;
 
-  SDL_LockYUVOverlay(plat_sdl_overlay);
   dst = (void *)plat_sdl_overlay->pixels[0];
 
   dst += doffs;
@@ -349,19 +404,15 @@ static void overlay_blit(int doffs, const void *src_, int w, int h,
     for (; h > 0; dst += dstride, src += sstride, h--)
       bgr555_to_uyvy(dst, src, w, x2);
   }
-
-  SDL_UnlockYUVOverlay(plat_sdl_overlay);
 }
 
 static void overlay_hud_print(int x, int y, const char *str, int bpp)
 {
   int x2;
-  SDL_LockYUVOverlay(plat_sdl_overlay);
   x2 = plat_sdl_overlay->w >= psx_w * 2;
   if (x2)
     x *= 2;
   basic_text_out_uyvy_nf(plat_sdl_overlay->pixels[0], plat_sdl_overlay->w, x, y, str);
-  SDL_UnlockYUVOverlay(plat_sdl_overlay);
 }
 
 static void gl_finish_pl(void)
@@ -375,6 +426,7 @@ static void gl_resize(void)
 {
   int w = in_menu ? g_menuscreen_w : psx_w;
   int h = in_menu ? g_menuscreen_h : psx_h;
+  int ret;
 
   gl_quirks &= ~(GL_QUIRK_SCALING_NEAREST | GL_QUIRK_VSYNC_ON);
   if (plat_target.hwfilter) // inverted from plat_sdl_gl_scaling()
@@ -382,14 +434,17 @@ static void gl_resize(void)
   if (g_opts & OPT_VSYNC)
     gl_quirks |= GL_QUIRK_VSYNC_ON;
 
-  if (plugin_owns_display())
+  if (plugin_owns_display()) {
     w = plat_sdl_screen->w, h = plat_sdl_screen->h;
+  }
   if (plat_sdl_gl_active) {
-    if (w == gl_w_prev && h == gl_h_prev && gl_quirks == gl_quirks_prev)
+    if (w == gl_w_prev && h == gl_h_prev && gl_quirks == gl_quirks_prev) {
       return;
+    }
     gl_finish_pl();
   }
-  plat_sdl_gl_active = (gl_create(window, &gl_quirks, w, h) == 0);
+  ret = gl_create(plat_sdl_window, &gl_quirks, w, h);
+  plat_sdl_gl_active = (ret == 0);
   if (plat_sdl_gl_active)
     gl_w_prev = w, gl_h_prev = h, gl_quirks_prev = gl_quirks;
   else {
@@ -413,7 +468,8 @@ static void overlay_or_gl_check_enable(void)
     plat_sdl_gl_active = 0;
   }
   if (!ovl_on && plat_sdl_overlay) {
-    SDL_FreeYUVOverlay(plat_sdl_overlay);
+    free(plat_sdl_overlay->pixels[0]);
+    free(plat_sdl_overlay);
     plat_sdl_overlay = NULL;
   }
   if (ovl_on)
@@ -535,6 +591,9 @@ static void centered_hud_print(int x, int y, const char *str, int bpp)
 
 static void *setup_blit_callbacks(int w, int h)
 {
+  void *ret = NULL;
+  const char *mode = "unknown";
+
   pl_plat_clear = NULL;
   pl_plat_blit = NULL;
   pl_plat_hud_print = NULL;
@@ -542,21 +601,30 @@ static void *setup_blit_callbacks(int w, int h)
     pl_plat_clear = plat_sdl_overlay_clear;
     pl_plat_blit = overlay_blit;
     pl_plat_hud_print = overlay_hud_print;
+    mode = "overlay";
+    ret = NULL;
   }
   else if (plat_sdl_gl_active) {
-    return shadow_fb;
+    mode = "GL";
+    ret = shadow_fb;
   }
   else {
     pl_plat_clear = centered_clear;
 
     if (!SDL_MUSTLOCK(plat_sdl_screen) && w == plat_sdl_screen->w &&
-        h == plat_sdl_screen->h)
-      return plat_sdl_screen->pixels;
-
-    pl_plat_blit = centered_blit;
-    pl_plat_hud_print = centered_hud_print;
+        h == plat_sdl_screen->h) {
+      mode = "direct";
+      ret = plat_sdl_screen->pixels;
+    } else {
+      pl_plat_blit = centered_blit;
+      pl_plat_hud_print = centered_hud_print;
+      mode = "centered";
+      ret = NULL;
+    }
   }
-  return NULL;
+  printf("setup_blit_callbacks: %dx%d mode=%s ret=%p gl_active=%d overlay=%p\n",
+         w, h, mode, ret, plat_sdl_gl_active, (void *)plat_sdl_overlay);
+  return ret;
 }
 
 // not using plat_sdl_change_video_mode() since we need
@@ -569,16 +637,9 @@ static void change_mode(int w, int h)
   if (plat_sdl_screen->w != set_w || plat_sdl_screen->h != set_h ||
       plat_target.vout_fullscreen != vout_fullscreen_old)
   {
-    Uint32 flags = plat_sdl_screen->flags;
-    if (plat_target.vout_fullscreen)
-      flags |= SDL_FULLSCREEN;
-    else {
-      flags &= ~SDL_FULLSCREEN;
-      if (plat_sdl_is_windowed())
-        flags |= SDL_RESIZABLE; // sdl12-compat 1.2.68 loses this flag
-    }
     if (plat_sdl_overlay) {
-      SDL_FreeYUVOverlay(plat_sdl_overlay);
+      free(plat_sdl_overlay->pixels[0]);
+      free(plat_sdl_overlay);
       plat_sdl_overlay = NULL;
       had_overlay = 1;
     }
@@ -588,15 +649,31 @@ static void change_mode(int w, int h)
       had_gl = 1;
     }
     SDL_PumpEvents();
-    plat_sdl_screen = SDL_SetVideoMode(set_w, set_h, 16, flags);
-    //printf("mode: %dx%d %x -> %dx%d\n", set_w, set_h, flags,
-    //  plat_sdl_screen->w, plat_sdl_screen->h);
+
+    // SDL2: resize window instead of SDL_SetVideoMode
+    SDL_SetWindowSize(plat_sdl_window, set_w, set_h);
+    if (plat_target.vout_fullscreen)
+      SDL_SetWindowFullscreen(plat_sdl_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    else {
+      SDL_SetWindowFullscreen(plat_sdl_window, 0);
+    }
+
+    // Recreate screen surface
+    if (plat_sdl_screen)
+      SDL_FreeSurface(plat_sdl_screen);
+    plat_sdl_screen = SDL_CreateRGBSurface(0, set_w, set_h, 16,
+      0xf800, 0x07e0, 0x001f, 0);
+
+    // Recreate texture
+    if (plat_sdl_texture)
+      SDL_DestroyTexture(plat_sdl_texture);
+    plat_sdl_texture = SDL_CreateTexture(plat_sdl_renderer,
+      SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STREAMING, set_w, set_h);
+
     assert(plat_sdl_screen);
     if (vout_fullscreen_old && !plat_target.vout_fullscreen)
-      // why is this needed?? (on 1.2.68)
-      SDL_WM_GrabInput(SDL_GRAB_OFF);
-    if (vout_mode_gl != -1)
-      update_wm_display_window();
+      SDL_SetWindowGrab(plat_sdl_window, SDL_FALSE);
+
     // overlay needs the latest plat_sdl_screen
     if (had_overlay)
       overlay_resize(1);
@@ -672,7 +749,12 @@ void *plat_gvideo_flip(void)
       (plat_sdl_screen->h - g_layer_h) / 2,
       g_layer_w, g_layer_h
     };
-    SDL_DisplayYUVOverlay(plat_sdl_overlay, &dstrect);
+    // SDL2: Update texture and render
+    SDL_UpdateTexture(plat_sdl_texture, NULL,
+      plat_sdl_overlay->pixels[0], plat_sdl_overlay->pitches[0]);
+    SDL_RenderClear(plat_sdl_renderer);
+    SDL_RenderCopy(plat_sdl_renderer, plat_sdl_texture, NULL, &dstrect);
+    SDL_RenderPresent(plat_sdl_renderer);
   }
   else if (plat_sdl_gl_active) {
     gl_flip_v(shadow_fb, psx_w, psx_h, g_scaler != SCALE_FULLSCREEN ? gl_vertices : NULL);
@@ -685,8 +767,14 @@ void *plat_gvideo_flip(void)
     forced_flips--;
     do_flip |= 1;
   }
-  if (do_flip)
-    SDL_Flip(plat_sdl_screen);
+  if (do_flip) {
+    // SDL2: Update texture and present
+    SDL_UpdateTexture(plat_sdl_texture, NULL,
+      plat_sdl_screen->pixels, plat_sdl_screen->pitch);
+    SDL_RenderClear(plat_sdl_renderer);
+    SDL_RenderCopy(plat_sdl_renderer, plat_sdl_texture, NULL, NULL);
+    SDL_RenderPresent(plat_sdl_renderer);
+  }
   handle_window_resize();
   if (do_flip) {
     if (forced_clears > 0) {
@@ -745,7 +833,7 @@ void plat_video_menu_enter(int is_rom_loaded)
 
 void plat_video_menu_begin(void)
 {
-  void *old_ovl = plat_sdl_overlay;
+  struct sdl2_overlay *old_ovl = plat_sdl_overlay;
   static int g_scaler_old;
   int scaler_changed = g_scaler_old != g_scaler;
   g_scaler_old = g_scaler;
@@ -772,12 +860,15 @@ void plat_video_menu_end(void)
       g_layer_w, g_layer_h
     };
 
-    SDL_LockYUVOverlay(plat_sdl_overlay);
     rgb565_to_uyvy(plat_sdl_overlay->pixels[0], shadow_fb,
       g_menuscreen_w * g_menuscreen_h);
-    SDL_UnlockYUVOverlay(plat_sdl_overlay);
 
-    SDL_DisplayYUVOverlay(plat_sdl_overlay, &dstrect);
+    // SDL2: Update texture and render
+    SDL_UpdateTexture(plat_sdl_texture, NULL,
+      plat_sdl_overlay->pixels[0], plat_sdl_overlay->pitches[0]);
+    SDL_RenderClear(plat_sdl_renderer);
+    SDL_RenderCopy(plat_sdl_renderer, plat_sdl_texture, NULL, &dstrect);
+    SDL_RenderPresent(plat_sdl_renderer);
   }
   else if (plat_sdl_gl_active) {
     gl_flip_v(g_menuscreen_ptr, g_menuscreen_w, g_menuscreen_h,
@@ -792,8 +883,14 @@ void plat_video_menu_end(void)
     forced_flips--;
     do_flip |= 1;
   }
-  if (do_flip)
-    SDL_Flip(plat_sdl_screen);
+  if (do_flip) {
+    // SDL2: Update and present
+    SDL_UpdateTexture(plat_sdl_texture, NULL,
+      plat_sdl_screen->pixels, plat_sdl_screen->pitch);
+    SDL_RenderClear(plat_sdl_renderer);
+    SDL_RenderCopy(plat_sdl_renderer, plat_sdl_texture, NULL, NULL);
+    SDL_RenderPresent(plat_sdl_renderer);
+  }
 
   handle_window_resize();
   g_menuscreen_ptr = NULL;
@@ -804,17 +901,24 @@ void plat_video_menu_leave(void)
   int d;
 
   in_menu = 0;
-  if (plat_sdl_overlay != NULL || plat_sdl_gl_active)
+
+  // PSC-style: stay in GL mode, don't switch video modes
+  // Just clear the shadow buffer and set up callbacks
+  if (plat_sdl_gl_active)
     memset(shadow_fb, 0, g_menuscreen_w * g_menuscreen_h * 2);
 
-  if (plat_target.vout_fullscreen)
-    change_mode(fs_w, fs_h);
-  overlay_or_gl_check_enable();
-  centered_clear();
+  // Ensure GL is resized for game resolution
+  if (plat_sdl_gl_active)
+    gl_resize();
+
   setup_blit_callbacks(psx_w, psx_h);
 
+  /* Keep ULDR mapping enabled for PSC controllers that use d-pad as axes.
+   * Original code disabled this for analog stick games, but PSC controllers
+   * don't have real analog sticks - the d-pad IS reported as axes. */
   for (d = 0; d < IN_MAX_DEVS; d++)
-    in_set_config_int(d, IN_CFG_ANALOG_MAP_ULDR, 0);
+    in_set_config_int(d, IN_CFG_ANALOG_MAP_ULDR, 1);
+
 }
 
 void *plat_prepare_screenshot(int *w, int *h, int *bpp)

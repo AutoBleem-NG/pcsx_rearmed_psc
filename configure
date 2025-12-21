@@ -98,14 +98,15 @@ AR="${AS-${CROSS_COMPILE}ar}"
 MAIN_LDLIBS="$LDLIBS -ldl -lm -lpthread"
 config_mak="config.mak"
 
+# SDL2: Use sdl2-config instead of sdl-config
 case "${OSTYPE}" in
   *BSD*|*darwin*)
     SYSROOT="$sysroot"
-    [ "x${SDL_CONFIG}" = "x" ] && SDL_CONFIG="${SYSROOT}/usr/local/bin/sdl-config"
+    [ "x${SDL_CONFIG}" = "x" ] && SDL_CONFIG="${SYSROOT}/usr/local/bin/sdl2-config"
     ;;
   *)
     SYSROOT="$(${CC} --print-sysroot 2> /dev/null || true)"
-    [ "x${SDL_CONFIG}" = "x" ] && SDL_CONFIG="${SYSROOT}/usr/bin/sdl-config"
+    [ "x${SDL_CONFIG}" = "x" ] && SDL_CONFIG="${SYSROOT}/usr/bin/sdl2-config"
     ;;
 esac
 
@@ -490,12 +491,13 @@ else
   fi
 fi
 
+# SDL2: Updated error messages for SDL2
 if [ "$need_sdl" = "yes" ]; then
   which ${SDL_CONFIG} > /dev/null || \
-    fail "sdl-config is missing; please install libsdl (libsdl1.2-dev)"
+    fail "sdl2-config is missing; please install libsdl2 (libsdl2-dev)"
   CFLAGS="$CFLAGS `${SDL_CONFIG} --cflags`"
   MAIN_LDLIBS="`${SDL_CONFIG} --libs` $MAIN_LDLIBS"
-  check_sdl || fail "please install libsdl (libsdl1.2-dev)"
+  check_sdl || fail "please install libsdl2 (libsdl2-dev)"
 fi
 
 # check for tslib (only headers needed)

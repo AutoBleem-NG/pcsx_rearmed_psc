@@ -48,7 +48,8 @@ static void InitSDL() {
 	if (SDL_WasInit(SDL_INIT_EVERYTHING)) {
 		SDL_InitSubSystem(SDL_INIT_AUDIO);
 	} else {
-		SDL_Init(SDL_INIT_AUDIO | SDL_INIT_NOPARACHUTE);
+		/* SDL2: SDL_INIT_NOPARACHUTE removed (doesn't exist in SDL2) */
+		SDL_Init(SDL_INIT_AUDIO);
 	}
 }
 
