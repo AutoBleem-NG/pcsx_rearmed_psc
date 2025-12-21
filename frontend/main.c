@@ -1,8 +1,15 @@
 /*
  * (C) notaz, 2010-2012
  *
+ * PlayStation Classic (PSC) port for AutoBleem-NG
+ * (C) 2025 AutoBleem-NG Team
+ *
  * This work is licensed under the terms of the GNU GPLv2 or later.
  * See the COPYING file in the top-level directory.
+ *
+ * PSC-specific modules:
+ * - psc_launcher.c/.h : Command-line args (-region, -filter, -ratio, -enter)
+ * - psc_input.h       : Controller button mappings (0xF0-0xF9)
  */
 
 #include <stdio.h>
@@ -24,6 +31,7 @@
 #include "pcnt.h"
 #include "menu.h"
 #include "plat.h"
+#include "psc_launcher.h"
 #include "../libpcsxcore/misc.h"
 #include "../libpcsxcore/cheat.h"
 #include "../libpcsxcore/sio.h"
@@ -595,8 +603,10 @@ int main(int argc, char *argv[])
 	int psxout = 0;
 	int loadst = 0;
 	int i;
+	struct psc_settings psc;
 
 	emu_core_preinit();
+	psc_settings_init(&psc);
 
 	// read command line options
 	for (i = 1; i < argc; i++) {
@@ -626,6 +636,21 @@ int main(int argc, char *argv[])
 			if (i+1 >= argc) break;
 			loadst_f = argv[++i];
 		}
+		/* PSC-specific arguments - handled by psc_launcher module */
+		else if (psc_parse_arg(&psc, argc, argv, &i)) {
+			/* argument consumed by PSC parser */
+		}
+		/* PSC launcher args we ignore (handled by SDL/config) */
+		else if (!strcmp(argv[i], "-pad") ||
+			 !strcmp(argv[i], "-display") ||
+			 !strcmp(argv[i], "-lang")) {
+			if (i+1 >= argc) break;
+			i++; /* skip value */
+		}
+		else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+			printf("PCSX-ReARMed " REV "\n");
+			return 0;
+		}
 		else if (!strcmp(argv[i], "-h") ||
 			 !strcmp(argv[i], "-help") ||
 			 !strcmp(argv[i], "--help")) {
@@ -638,9 +663,17 @@ int main(int argc, char *argv[])
 							"\t-psxout\t\tEnable PSX output\n"
 							"\t-load STATENUM\tLoads savestate STATENUM (1-9)\n"
 							"\t-loadf FILE\tLoads savestate from FILE\n"
+							"\t-region N\tSet region (0=auto, 1=NTSC, 2=PAL)\n"
+							"\t-ratio N\tSet aspect ratio (0=4:3, 1=16:9)\n"
+							"\t-filter N\tSet bilinear filter (0=on, 1=off)\n"
+							"\t-enter N\tSet confirm button (0=O, 1=X)\n"
 							"\t-h -help\tDisplay this message\n"
 							"\tfile\t\tLoads a PSX EXE file\n"));
 			 return 0;
+		} else if (argv[i][0] == '-') {
+			/* Unknown option - skip it and its value if present */
+			if (i+1 < argc && argv[i+1][0] != '-')
+				i++;
 		} else {
 			strncpy(file, argv[i], MAXPATHLEN);
 			if (file[0] != '/') {
@@ -671,6 +704,9 @@ int main(int argc, char *argv[])
 
 	if (psxout)
 		Config.PsxOut = 1;
+
+	/* Apply PSC launcher settings (region, filter, ratio, enter) */
+	psc_apply_settings(&psc);
 
 	if (LoadPlugins() == -1) {
 		// FIXME: this recovery doesn't work, just delete bad config and bail out
