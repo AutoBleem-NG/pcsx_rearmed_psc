@@ -489,6 +489,8 @@ endif
 
 # misc
 OBJS += frontend/main.o frontend/plugin.o
+# PSC launcher argument handling
+OBJS += frontend/psc_launcher.o
 frontend/main.o libpcsxcore/misc.o: CFLAGS += -DBUILTIN_GPU=$(BUILTIN_GPU)
 
 frontend/menu.o frontend/main.o: include/revision.h
@@ -631,3 +633,26 @@ rel: pcsx $(PLUGINS) \
 	mkdir out/pcsx_rearmed/bios/
 	cd out && zip -9 -r ../pcsx_rearmed_$(VER)_caanoo.zip *
 endif
+
+# PSC Docker build target
+DOCKER_IMAGE ?= pcsx-rearmed-psc
+DOCKER_OUTPUT ?= pcsx_bin
+
+# Git version: commit hash + dirty flag
+GIT_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo "unknown")
+
+.PHONY: docker docker-build docker-extract
+
+docker: docker-build docker-extract
+
+docker-build:
+	docker build --build-arg GIT_VERSION="$(GIT_VERSION)" -t $(DOCKER_IMAGE) .
+
+docker-extract:
+	@mkdir -p $(DOCKER_OUTPUT)
+	@id=$$(docker create $(DOCKER_IMAGE)) && \
+	docker cp $$id:/build/output/. $(DOCKER_OUTPUT)/ && \
+	docker rm $$id > /dev/null
+	@echo "Binaries extracted to $(DOCKER_OUTPUT)/"
+	@ls -la $(DOCKER_OUTPUT)/
+	@ls -la $(DOCKER_OUTPUT)/plugins/ 2>/dev/null || true

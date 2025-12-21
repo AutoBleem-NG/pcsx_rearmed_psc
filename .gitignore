@@ -15,6 +15,7 @@ cheatpops.db
 /include/revision.h
 /tools
 obj/
+.idea
 .vscode/
 .vscode/ipch/*
 

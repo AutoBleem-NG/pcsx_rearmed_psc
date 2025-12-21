@@ -1,0 +1,30 @@
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# Build outputs
+pcsx_bin/
+*.o
+*.a
+config.mak
+config.log
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# GitHub (not needed for build)
+.github/
+
+# Development
+backup/
+
+# Platform-specific (not PSC)
+blackberry_qnx/
+debian_maemo/
+maemo/
+miyoo/
+jni/
