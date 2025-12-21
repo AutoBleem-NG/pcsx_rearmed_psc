@@ -30,6 +30,7 @@
 #include "pcnt.h"
 #include "pl_gun_ts.h"
 #include "cspace.h"
+#include "psc_input.h"
 #include "psemu_plugin_defs.h"
 #include "../libpcsxcore/new_dynarec/new_dynarec.h"
 #include "../libpcsxcore/psxmem_map.h"
@@ -672,6 +673,10 @@ static void update_input(void)
 		update_analogs();
 	emu_act = actions[IN_BINDTYPE_EMU];
 	in_state_gun = emu_act & SACTION_GUN_MASK;
+
+	/* PSC: Select+Start combo triggers menu (no dedicated menu button) */
+	if (PSC_IS_MENU_COMBO(actions[IN_BINDTYPE_PLAYER12]))
+		emu_act |= (1 << SACTION_ENTER_MENU);
 
 	emu_act &= ~SACTION_GUN_MASK;
 	if (emu_act) {
