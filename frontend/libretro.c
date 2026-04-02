@@ -8,14 +8,19 @@
 #define _GNU_SOURCE 1 // strcasestr
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <math.h>
+#include <errno.h>
 #include <assert.h>
 #ifdef __MACH__
 #include <unistd.h>
 #include <sys/syscall.h>
 #endif
+#include <zlib.h>
 
 #include "retro_miscellaneous.h"
 #ifdef SWITCH
@@ -57,6 +62,9 @@
 #include "3ds/3ds_utils.h"
 #endif
 
+#ifndef min
+#define min(a, b) ((b) < (a) ? (b) : (a))
+#endif
 #ifndef MAP_FAILED
 #define MAP_FAILED      ((void *)(intptr_t)-1)
 #endif
@@ -66,12 +74,18 @@
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
-
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#endif
 
 #define ISHEXDEC ((buf[cursor] >= '0') && (buf[cursor] <= '9')) || ((buf[cursor] >= 'a') && (buf[cursor] <= 'f')) || ((buf[cursor] >= 'A') && (buf[cursor] <= 'F'))
+
+#ifndef RETRO_ENVIRONMENT_SET_SAVE_STATE_DISABLE_UNDO
+#define RETRO_ENVIRONMENT_SET_SAVE_STATE_DISABLE_UNDO 0x800005
+#endif
 
 //hack to prevent retroarch freezing when reseting in the menu but not while running with the hot key
 static int rebootemu = 0;
@@ -100,7 +114,6 @@ static int vout_width = 256, vout_height = 240, vout_pitch_b = 256*2;
 static int vout_fb_dirty;
 static int psx_w, psx_h;
 static bool vout_can_dupe;
-static bool found_bios;
 static int display_internal_fps;
 static bool libretro_supports_bitmasks = false;
 static bool libretro_supports_option_categories = false;
@@ -134,8 +147,6 @@ static int retro_audio_buff_underrun            = false;
 static unsigned retro_audio_latency             = 0;
 static int update_audio_latency                 = false;
 
-static unsigned int current_width;
-static unsigned int current_height;
 static enum retro_pixel_format current_fmt;
 
 static int plugins_opened;
@@ -248,27 +259,44 @@ static void init_memcard(char *mcd_data)
    }
 }
 
-static void bgr_to_fb_empty(void *dst, const void *src, int bytes)
+static void bgr_to_fb_empty(void *dst, const void *src, int dst_pixels)
 {
 }
 
-typedef void (bgr_to_fb_func)(void *dst, const void *src, int bytes);
-static bgr_to_fb_func *g_bgr_to_fb = bgr_to_fb_empty;
+typedef void (bgr_to_fb_func)(void *dst, const void *src, int dst_pixels);
+
+static const struct cspace_func_type {
+   void (*blit)(void *dst, const void *src, int dst_pixels);
+   void (*blit_dscale640)(void *dst, const void *src, int dst_pixels);
+   void (*blit_dscale512)(void *dst, const void *src, int dst_pixels);
+} cspace_funcs[] = {
+   { bgr555_to_rgb565,   bgr555_to_rgb565_640_to_320,   bgr555_to_rgb565_512_to_320 },
+   { bgr888_to_rgb565,   bgr888_to_rgb565_640_to_320,   bgr888_to_rgb565_512_to_320 },
+   { bgr555_to_xrgb8888, bgr555_to_xrgb8888_640_to_320, bgr555_to_xrgb8888_512_to_320 },
+   { bgr888_to_xrgb8888, bgr888_to_xrgb8888_640_to_320, bgr888_to_xrgb8888_512_to_320 },
+};
 
 static void set_bgr_to_fb_func(int bgr24)
 {
+   int func_id = bgr24;
    switch (current_fmt)
    {
-   case RETRO_PIXEL_FORMAT_XRGB8888:
-      g_bgr_to_fb = bgr24 ? bgr888_to_xrgb8888 : bgr555_to_xrgb8888;
-      break;
    case RETRO_PIXEL_FORMAT_RGB565:
-      g_bgr_to_fb = bgr24 ? bgr888_to_rgb565 : bgr555_to_rgb565;
+      break;
+   case RETRO_PIXEL_FORMAT_XRGB8888:
+      func_id += 2;
       break;
    default:
       LogErr("unsupported current_fmt: %d\n", current_fmt);
-      g_bgr_to_fb = bgr_to_fb_empty;
-      break;
+      pl_rearmed_cbs.cspace_blit = bgr_to_fb_empty;
+      return;
+   }
+   pl_rearmed_cbs.cspace_blit = cspace_funcs[func_id].blit;
+   if (vout_width == 320) {
+      if (psx_w >= 640-4)
+         pl_rearmed_cbs.cspace_blit = cspace_funcs[func_id].blit_dscale640;
+      else if (psx_w >= 512-4)
+         pl_rearmed_cbs.cspace_blit = cspace_funcs[func_id].blit_dscale512;
    }
 }
 
@@ -306,10 +334,19 @@ static void set_vout_fb(void)
 
 static void vout_set_mode(int w, int h, int raw_w, int raw_h, int bpp)
 {
+   static unsigned int current_width;
+   static unsigned int current_height;
    vout_width = w;
    vout_height = h;
    psx_w = raw_w;
    psx_h = raw_h;
+
+   if (pl_rearmed_cbs.scale_hires) {
+      if (raw_w >= 512-4 && w > 320)
+         vout_width = 320;
+      if (h > 256)
+         vout_height = h / 2;
+   }
 
    /* it may seem like we could do RETRO_ENVIRONMENT_SET_PIXEL_FORMAT here to
     * switch to something that can accommodate bgr24 for FMVs, but although it
@@ -375,14 +412,16 @@ static void vout_flip(const void *vram_, int vram_ofs, int bgr24,
       int x, int y, int w, int h, int dims_changed)
 {
    int bytes_pp = (current_fmt == RETRO_PIXEL_FORMAT_XRGB8888) ? 4 : 2;
+   bgr_to_fb_func *bgr_to_fb = pl_rearmed_cbs.cspace_blit;
    int bytes_pp_s = bgr24 ? 3 : 2;
-   bgr_to_fb_func *bgr_to_fb = g_bgr_to_fb;
    unsigned char *dest = vout_buf_ptr;
    const unsigned char *vram = vram_;
-   int dstride = vout_pitch_b, h1 = h;
+   int dstride = vout_pitch_b, h1;
    int enhres = w > psx_w;
    u32 vram_mask = enhres ? ~0 : 0xfffff;
+   int w_blit = min(w, vout_width);
    int port = 0, hwrapped;
+   int sstride = 2048;
 
    if (vram == NULL || dims_changed || (in_enable_crosshair[0] + in_enable_crosshair[1]) > 0)
    {
@@ -398,22 +437,28 @@ static void vout_flip(const void *vram_, int vram_ofs, int bgr24,
          goto out;
    }
 
+   if (h >= vout_height * 3 / 2) {
+      sstride = 4096;
+      h /= 2;
+   }
+   h = min(h, vout_height);
    dest += x * bytes_pp + y * dstride;
 
-   for (; h1-- > 0; dest += dstride) {
-      bgr_to_fb(dest, vram + vram_ofs, w * bytes_pp_s);
-      vram_ofs = (vram_ofs + 2048) & vram_mask;
+   for (h1 = h; h1-- > 0; dest += dstride) {
+      bgr_to_fb(dest, vram + vram_ofs, w_blit);
+      vram_ofs = (vram_ofs + sstride) & vram_mask;
    }
 
    hwrapped = (vram_ofs & 2047) + w * bytes_pp_s - 2048;
    if (!enhres && hwrapped > 0) {
       // this is super-rare so just fix-up
-      vram_ofs = (vram_ofs - h * 2048) & 0xff800;
+      w_blit = hwrapped / bytes_pp_s;
+      vram_ofs = (vram_ofs - h * sstride) & 0xff800;
       dest -= dstride * h;
       dest += (w - hwrapped / bytes_pp_s) * bytes_pp;
       for (h1 = h; h1-- > 0; dest += dstride) {
-         bgr_to_fb(dest, vram + vram_ofs, hwrapped);
-         vram_ofs = (vram_ofs + 2048) & 0xfffff;
+         bgr_to_fb(dest, vram + vram_ofs, w_blit);
+         vram_ofs = (vram_ofs + sstride) & 0xfffff;
       }
    }
 
@@ -566,7 +611,16 @@ static int ctr_get_tlbe(void *ptr)
       return -1;
    return svcCustomBackdoor(ctr_get_tlbe_k, ptr, NULL, NULL);
 }
-#endif
+
+static void ctr_get_mem_info(u32 *used, u32 *aval)
+{
+   *aval = *((volatile u32 *)0x1FF80040);
+   s64 mem_used = 0;
+   if (__ctr_svchax)
+      svcGetSystemInfo(&mem_used, 0, 1);
+   *used = mem_used;
+}
+#endif // _3DS
 
 #ifdef HAVE_LIBNX
 static void *pl_switch_mmap(unsigned long addr, size_t size,
@@ -591,7 +645,7 @@ static void pl_switch_munmap(void *ptr, size_t size, enum psxMapTag tag)
    (void)tag;
    free(ptr);
 }
-#endif
+#endif // HAVE_LIBNX
 
 #ifdef VITA
 typedef struct
@@ -685,21 +739,31 @@ static void pl_vita_munmap(void *ptr, size_t size, enum psxMapTag tag)
 
    free(ptr);
 }
-#endif
+#endif // VITA
 
-static void log_mem_usage(void)
+static void log_mem_usage(int only_if_oom)
 {
 #ifdef _3DS
    extern u32 __heap_size, __linear_heap_size, __stacksize__;
    extern char __end__; // 3dsx.ld
-   u32 app_memory = *((volatile u32 *)0x1FF80040);
-   s64 mem_used = 0;
-   if (__ctr_svchax)
-      svcGetSystemInfo(&mem_used, 0, 1);
+   u32 sp, app_memory = 0;
+   u32 mem_used = 0;
+   void *heap;
+
+   ctr_get_mem_info(&mem_used, &app_memory);
+
+   if (__stacksize__ < 0x100000u || __linear_heap_size < 0xf00000u)
+      LogWarn("past OOM detected, expect instability\n");
+   else if (only_if_oom && mem_used < app_memory - 256*1024u)
+      return;
 
    SysPrintf("mem: %d/%d heap: %d linear: %d/%d stack: %d exe: %d\n",
       (int)mem_used, app_memory, __heap_size, __linear_heap_size - linearSpaceFree(),
       __linear_heap_size, __stacksize__, (int)&__end__ - 0x100000);
+   heap = malloc(4096);
+   asm volatile("mov %0, sp" : "=r"(sp));
+   SysPrintf("current sp: %08x heap: %p\n", sp, heap);
+   free(heap);
 #endif
 }
 
@@ -718,6 +782,7 @@ struct rearmed_cbs pl_rearmed_cbs = {
    .pl_vout_set_mode = vout_set_mode,
    .pl_vout_flip     = vout_flip,
    .pl_vout_close    = vout_close,
+   .cspace_blit      = bgr_to_fb_empty,
    .mmap             = pl_mmap,
    .munmap           = pl_munmap,
    .gpu_state_change = gpu_state_change,
@@ -816,8 +881,8 @@ static char *get_pse_pad_label[] = {
 static const struct retro_controller_description pads[8] =
 {
    { "standard",   RETRO_DEVICE_JOYPAD },
-   { "analog",     RETRO_DEVICE_PSE_ANALOG },
    { "dualshock",  RETRO_DEVICE_PSE_DUALSHOCK },
+   { "analog",     RETRO_DEVICE_PSE_ANALOG },
    { "negcon",     RETRO_DEVICE_PSE_NEGCON },
    { "guncon",     RETRO_DEVICE_PSE_GUNCON },
    { "konami gun", RETRO_DEVICE_PSE_JUSTIFIER },
@@ -968,7 +1033,6 @@ static bool update_option_visibility(void)
             "pcsx_rearmed_gpu_unai_skipline",
             "pcsx_rearmed_gpu_unai_lighting",
             "pcsx_rearmed_gpu_unai_fast_lighting",
-            "pcsx_rearmed_gpu_unai_scale_hires",
          };
 
          option_display.visible = show_advanced_gpu_unai_settings;
@@ -1074,6 +1138,8 @@ unsigned retro_api_version(void)
 static void update_multitap(void)
 {
    struct retro_variable var = { 0 };
+   int multitap1_old = multitap1;
+   int multitap2_old = multitap2;
 
    multitap1 = 0;
    multitap2 = 0;
@@ -1092,13 +1158,19 @@ static void update_multitap(void)
          multitap2 = 1;
       }
    }
+   if (multitap1 != multitap1_old || multitap2 != multitap2_old) {
+      SysPrintf("multitap: %d %d\n", multitap1, multitap2);
+      padChanged();
+   }
 }
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
+   int in_type_old;
    if (port >= PORTS_NUMBER)
       return;
 
+   in_type_old = in_type[port];
    switch (device)
    {
    case RETRO_DEVICE_JOYPAD:
@@ -1129,7 +1201,10 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
       break;
    }
 
-   SysPrintf("port: %u  device: %s\n", port + 1, get_pse_pad_label[in_type[port]]);
+   if (in_type[port] != in_type_old) {
+       SysPrintf("port: %u  device: %s\n", port + 1, get_pse_pad_label[in_type[port]]);
+       padChanged();
+   }
 }
 
 void retro_get_system_info(struct retro_system_info *info)
@@ -1139,7 +1214,7 @@ void retro_get_system_info(struct retro_system_info *info)
 #endif
    memset(info, 0, sizeof(*info));
    info->library_name     = "PCSX-ReARMed";
-   info->library_version  = "r25" GIT_VERSION;
+   info->library_version  = "r26" GIT_VERSION;
    info->valid_extensions = "bin|cue|img|mdf|pbp|toc|cbn|m3u|chd|iso|exe";
    info->need_fullpath    = true;
 }
@@ -1253,6 +1328,9 @@ bool retro_serialize(void *data, size_t size)
    int ret;
    CdromFrontendId = disk_current_index;
    ret = SaveState(data);
+
+   // old3ds tends to oom here, so log
+   log_mem_usage(1);
    return ret == 0 ? true : false;
 }
 
@@ -1607,8 +1685,10 @@ static bool read_m3u(const char *file)
    char line[1024];
    char name[PATH_MAX];
    FILE *fp = fopen(file, "r");
-   if (!fp)
+   if (!fp) {
+      LogErr("fopen '%s' failed: %d\n", file, errno);
       return false;
+   }
 
    while (fgets(line, sizeof(line), fp) && disk_count < sizeof(disks) / sizeof(disks[0]))
    {
@@ -1694,10 +1774,10 @@ static void set_retro_memmap(void)
    uint64_t flags_ram = RETRO_MEMDESC_SYSTEM_RAM;
    struct retro_memory_map retromap = { 0 };
    struct retro_memory_descriptor descs[] = {
-      { flags_ram, psxM, 0, 0x00000000, 0x5fe00000, 0, 0x200000 },
-      { flags_ram, psxH, 0, 0x1f800000, 0x7ffffc00, 0, 0x000400 },
+      { flags_ram, psxRegs.ptrs.psxM, 0, 0x00000000, 0x5fe00000, 0, 0x200000 },
+      { flags_ram, psxRegs.ptrs.psxH, 0, 0x1f800000, 0x7ffffc00, 0, 0x000400 },
       // not ram but let the frontend patch it if it wants; should be last
-      { flags_ram, psxR, 0, 0x1fc00000, 0x5ff80000, 0, 0x080000 },
+      { flags_ram, psxRegs.ptrs.psxR, 0, 0x1fc00000, 0x5ff80000, 0, 0x080000 },
    };
 
    retromap.descriptors = descs;
@@ -1709,15 +1789,15 @@ static void set_retro_memmap(void)
 }
 
 static void show_notification(const char *msg_str,
-      unsigned duration_ms, unsigned priority)
+      unsigned duration_ms, unsigned priority, enum retro_log_level level)
 {
    if (msg_interface_version >= 1)
    {
       struct retro_message_ext msg = {
          msg_str,
          duration_ms,
-         3,
-         RETRO_LOG_WARN,
+         priority,
+         level,
          RETRO_MESSAGE_TARGET_ALL,
          RETRO_MESSAGE_TYPE_NOTIFICATION,
          -1
@@ -1739,7 +1819,7 @@ static void retro_audio_buff_status_cb(
 {
    retro_audio_buff_active    = active;
    retro_audio_buff_occupancy = occupancy;
-   retro_audio_buff_underrun  = underrun_likely;
+   retro_audio_buff_underrun |= underrun_likely;
 }
 
 static void retro_set_audio_buff_status_cb(void)
@@ -1777,8 +1857,8 @@ static void retro_set_audio_buff_status_cb(void)
           * buffer underruns */
          uint32_t frame_time_usec = 1000000.0 / (is_pal_mode ? 50.0 : 60.0);
 
-         /* Set latency to 6x current frame time... */
-         retro_audio_latency = (unsigned)(6 * frame_time_usec / 1000);
+         /* Set latency... */
+         retro_audio_latency = (unsigned)((4 + frameskip_interval * 2) * frame_time_usec / 1000);
 
          /* ...then round up to nearest multiple of 32 */
          retro_audio_latency = (retro_audio_latency + 0x1F) & ~0x1F;
@@ -1787,6 +1867,7 @@ static void retro_set_audio_buff_status_cb(void)
 
    update_audio_latency = true;
    frameskip_counter    = 0;
+   pl_rearmed_cbs.fskip_force = 0;
 }
 
 static void update_variables(bool in_flight);
@@ -1927,7 +2008,8 @@ bool retro_load_game(const struct retro_game_info *info)
 #if !defined(HAVE_CDROM) && !defined(USE_LIBRETRO_VFS)
       ReleasePlugins();
       LogErr("%s\n", "Physical CD-ROM support is not compiled in.");
-      show_notification("Physical CD-ROM support is not compiled in.", 6000, 3);
+      show_notification("Physical CD-ROM support is not compiled in.",
+         6000, 3, RETRO_LOG_ERROR);
       return false;
 #endif
    }
@@ -2010,10 +2092,18 @@ bool retro_load_game(const struct retro_game_info *info)
    for (i = 0; i < 8; ++i)
       in_type[i] = PSE_PAD_TYPE_STANDARD;
 
-   if (!is_exe && CheckCdrom() == -1)
+   if (!is_exe)
    {
-      LogErr("unsupported/invalid CD image: %s\n", info->path);
-      return false;
+      if (CheckCdrom() == -1)
+      {
+         LogErr("unsupported/invalid CD image: %s\n", info->path);
+         return false;
+      }
+   }
+   else
+   {
+      Config.PsxRegion = PSX_REGION_US;
+      Config.PsxType = PSX_TYPE_NTSC;
    }
 
    plugin_call_rearmed_cbs();
@@ -2032,12 +2122,31 @@ bool retro_load_game(const struct retro_game_info *info)
 
    set_retro_memmap();
    retro_set_audio_buff_status_cb();
-   log_mem_usage();
+#ifdef _3DS
+   u32 mem_used = 0, mem_avail = 0;
+   ctr_get_mem_info(&mem_used, &mem_avail);
+   // 5 buffers: load undo, save undo, current load/save, backup copy, ram save
+   if (mem_avail - mem_used < 5 * retro_serialize_size() * 11 / 10) {
+      bool true_ = true;
+      environ_cb(RETRO_ENVIRONMENT_SET_SAVE_STATE_DISABLE_UNDO, &true_);
+   }
+#endif
+   log_mem_usage(0);
 
-   if (check_unsatisfied_libcrypt())
-      show_notification("LibCrypt protected game with missing SBI detected", 3000, 3);
+   if (check_unsatisfied_libcrypt()) {
+      show_notification("LibCrypt protected game with missing SBI detected",
+            3000, 3, RETRO_LOG_WARN);
+   }
+   if (Config.SlowBoot)
+   {
+      char buf[16+64];
+      if (Config.PsxRegion < ARRAY_SIZE(Config.Bios) && Config.Bios[Config.PsxRegion][0]) {
+         snprintf(buf, sizeof(buf), "Booting BIOS: %s", Config.Bios[Config.PsxRegion]);
+         show_notification(buf, 1000, 2, RETRO_LOG_INFO);
+      }
+   }
    if (Config.TurboCD)
-      show_notification("TurboCD is ON", 700, 2);
+      show_notification("TurboCD is ON", 700, 2, RETRO_LOG_INFO);
 
    return true;
 }
@@ -2052,7 +2161,7 @@ void *retro_get_memory_data(unsigned id)
    if (id == RETRO_MEMORY_SAVE_RAM)
       return Mcd1Data;
    else if (id == RETRO_MEMORY_SYSTEM_RAM)
-      return psxM;
+      return psxRegs.ptrs.psxM;
    else
       return NULL;
 }
@@ -2499,15 +2608,18 @@ static void update_variables(bool in_flight)
          spu_config.iUseInterpolation = 0;
    }
 
-#if P_HAVE_PTHREAD
+#ifdef USE_ASYNC_SPU
    var.value = NULL;
    var.key = "pcsx_rearmed_spu_thread";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
+      int spu_thread_old = spu_config.iUseThread;
       if (strcmp(var.value, "enabled") == 0)
          spu_config.iUseThread = 1;
       else
          spu_config.iUseThread = 0;
+      if (spu_config.iUseThread != spu_thread_old && SPU_configure)
+         SPU_configure();
    }
 #endif
 
@@ -2553,6 +2665,18 @@ static void update_variables(bool in_flight)
          Config.FractionalFramerate = 1;
       else // auto
          Config.FractionalFramerate = -1;
+   }
+
+   var.value = NULL;
+   var.key = "pcsx_rearmed_alt_flip";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (strcmp(var.value, "early") == 0)
+         Config.AlternativeFlip = 1;
+      else if (strcmp(var.value, "late") == 0)
+         Config.AlternativeFlip = 0;
+      else // auto
+         Config.AlternativeFlip = -1;
    }
 
    var.value = NULL;
@@ -2602,18 +2726,29 @@ static void update_variables(bool in_flight)
          pl_rearmed_cbs.show_overscan = 0;
    }
 
-#ifdef THREAD_RENDERING
-   var.key = "pcsx_rearmed_gpu_thread_rendering";
+   var.key = "pcsx_rearmed_scale_hires";
    var.value = NULL;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (strcmp(var.value, "disabled") == 0)
-         pl_rearmed_cbs.thread_rendering = THREAD_RENDERING_OFF;
-      else if (strcmp(var.value, "sync") == 0)
-         pl_rearmed_cbs.thread_rendering = THREAD_RENDERING_SYNC;
-      else if (strcmp(var.value, "async") == 0)
-         pl_rearmed_cbs.thread_rendering = THREAD_RENDERING_ASYNC;
+         pl_rearmed_cbs.scale_hires = 0;
+      else if (strcmp(var.value, "enabled") == 0)
+         pl_rearmed_cbs.scale_hires = 1;
+   }
+
+#ifdef USE_ASYNC_GPU
+   var.key = "pcsx_rearmed_gpu_thread_rendering";
+   var.value = NULL;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (strcmp(var.value, "enabled") == 0)
+         pl_rearmed_cbs.thread_rendering = 1;
+      else if (strcmp(var.value, "disabled") == 0)
+         pl_rearmed_cbs.thread_rendering = 0;
+      else
+         pl_rearmed_cbs.thread_rendering = -1; // auto
    }
 #endif
 
@@ -2698,7 +2833,7 @@ static void update_variables(bool in_flight)
    /* Note: This used to be an option, but it only works
     * (correctly) when running high resolution games
     * (480i, 512i) and has been obsoleted by
-    * pcsx_rearmed_gpu_unai_scale_hires */
+    * pcsx_rearmed_scale_hires */
    pl_rearmed_cbs.gpu_unai.ilace_force = 0;
 
    var.key = "pcsx_rearmed_gpu_unai_old_renderer";
@@ -2754,17 +2889,6 @@ static void update_variables(bool in_flight)
          pl_rearmed_cbs.gpu_unai.blending = 0;
       else if (strcmp(var.value, "enabled") == 0)
          pl_rearmed_cbs.gpu_unai.blending = 1;
-   }
-
-   var.key = "pcsx_rearmed_gpu_unai_scale_hires";
-   var.value = NULL;
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (strcmp(var.value, "disabled") == 0)
-         pl_rearmed_cbs.gpu_unai.scale_hires = 0;
-      else if (strcmp(var.value, "enabled") == 0)
-         pl_rearmed_cbs.gpu_unai.scale_hires = 1;
    }
 #endif // GPU_UNAI
 
@@ -2868,20 +2992,6 @@ static void update_variables(bool in_flight)
       APT_SetAppCpuTimeLimit(strtol(var.value, NULL, 10));
    }
 #endif
-
-   if (found_bios)
-   {
-      var.value = NULL;
-      var.key = "pcsx_rearmed_show_bios_bootlogo";
-      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      {
-         Config.SlowBoot = 0;
-         if (strcmp(var.value, "enabled") == 0)
-            Config.SlowBoot = 1;
-         else if (strcmp(var.value, "enabled_no_pcsx") == 0)
-            Config.SlowBoot = 2;
-      }
-   }
 
    if (in_flight)
    {
@@ -3210,7 +3320,7 @@ static void update_input(void)
                int state = padToggleAnalog(i);
                char msg[32];
                snprintf(msg, sizeof(msg), "ANALOG %s", state ? "ON" : "OFF");
-               show_notification(msg, 800, 1);
+               show_notification(msg, 800, 1, RETRO_LOG_INFO);
                in_dualshock_toggling = true;
             }
             return;
@@ -3303,12 +3413,16 @@ static void print_internal_fps(void)
    }
 }
 
+static bool get_bios_config_hle(void);
+static void prepare_bios(bool use_hle);
+
 void retro_run(void)
 {
    //SysReset must be run while core is running,Not in menu (Locks up Retroarch)
    if (rebootemu != 0)
    {
       rebootemu = 0;
+      prepare_bios(get_bios_config_hle());
       SysReset();
       if (Config.HLE)
          LoadCdrom();
@@ -3317,12 +3431,9 @@ void retro_run(void)
    set_vout_fb();
    print_internal_fps();
 
-   /* Check whether current frame should
-    * be skipped */
-   pl_rearmed_cbs.fskip_force = 0;
-   pl_rearmed_cbs.fskip_dirty = 0;
-
-   if (frameskip_type != FRAMESKIP_NONE)
+   /* Check whether current frame should be skipped */
+   if (frameskip_type != FRAMESKIP_NONE && !pl_rearmed_cbs.fskip_force &&
+       frameskip_counter < frameskip_interval)
    {
       bool skip_frame = false;
 
@@ -3341,8 +3452,7 @@ void retro_run(void)
             break;
       }
 
-      if (skip_frame && frameskip_counter < frameskip_interval)
-         pl_rearmed_cbs.fskip_force = 1;
+      pl_rearmed_cbs.fskip_force = skip_frame;
    }
 
    /* If frameskip/timing settings have changed,
@@ -3368,11 +3478,16 @@ void retro_run(void)
    psxRegs.stop = 0;
    psxCpu->Execute(&psxRegs);
 
-   if (pl_rearmed_cbs.fskip_dirty == 1) {
-      if (frameskip_counter < frameskip_interval)
-         frameskip_counter++;
-      else if (frameskip_counter >= frameskip_interval || !pl_rearmed_cbs.fskip_force)
+   if (pl_rearmed_cbs.fskip_dirty) {
+      if (frameskip_counter >= frameskip_interval || !pl_rearmed_cbs.fskip_force)
          frameskip_counter = 0;
+      else
+         frameskip_counter++;
+
+      if (pl_rearmed_cbs.fskip_force)
+         retro_audio_buff_underrun = false;
+      pl_rearmed_cbs.fskip_force = 0;
+      pl_rearmed_cbs.fskip_dirty = 0;
    }
 
    video_cb((vout_fb_dirty || !vout_can_dupe) ? vout_buf_ptr : NULL,
@@ -3389,91 +3504,116 @@ void retro_run(void)
 #endif
 }
 
-static bool try_use_bios(const char *path, bool preferred_only)
-{
-   long size;
-   const char *name;
-   FILE *fp = fopen(path, "rb");
-   if (fp == NULL)
-      return false;
+// see Config.Bios
+static char *bios_saved[PSX_REGION_COUNT];
 
-   fseek(fp, 0, SEEK_END);
-   size = ftell(fp);
-   fclose(fp);
+static bool have_all_bios(void)
+{
+   size_t i;
+   for (i = 0; i < ARRAY_SIZE(bios_saved); i++)
+      if (!bios_saved[i])
+         return false;
+   return true;
+}
+
+static void try_use_bios(char *path, size_t path_size, bool preferred_only, bool quiet)
+{
+   const char *guessed_region_name = "US";
+   u8 *data = NULL, guessed_region = PSX_REGION_US;
+   const char *name;
+   long i, size;
+   FILE *fp;
+   u32 crc;
 
    name = strrchr(path, SLASH);
    if (name++ == NULL)
       name = path;
+   for (i = 0; i < ARRAY_SIZE(bios_saved); i++)
+      if (bios_saved[i] && !strcmp(name, bios_saved[i]))
+         return;
 
+   fp = fopen(path, "rb");
+   if (fp == NULL) {
+      if (!quiet)
+         LogErr("fopen '%s' failed: %d\n", path, errno);
+      return;
+   }
+
+   if (strcasestr(name, "unirom"))
+      goto finish;
+
+   fseek(fp, 0, SEEK_END);
+   size = ftell(fp);
    if (preferred_only && size != 512 * 1024)
-      return false;
+      goto finish;
    if (size != 512 * 1024 && size != 4 * 1024 * 1024)
-      return false;
-   if (strstr(name, "unirom"))
-      return false;
-   // jp bios have an addidional region check
-   if (preferred_only && (strcasestr(name, "00.") || strcasestr(name, "j.bin")))
-      return false;
+      goto finish;
 
-   snprintf(Config.Bios, sizeof(Config.Bios), "%s", name);
-   return true;
+   data = malloc(512 * 1024);
+   if (data == NULL)
+      goto finish;
+   if (fseek(fp, 0, SEEK_SET) != 0)
+      goto finish;
+   if (fread(data, 1, 512 * 1024, fp) != 512 * 1024) {
+      LogErr("fread '%s' failed\n", path);
+      goto finish;
+   }
+   if (memcmp(data + 1, "\x00\x08\x3c\x3f", 4) &&
+       strncmp((char *)data + 0x12c, "PS compatible", strlen("PS compatible")))
+   {
+      if (!quiet)
+         SysPrintf("skipping '%s'\n", name);
+      goto finish;
+   }
+
+   crc = crc32(0, data, 512 * 1024);
+   if (!memcmp(data + 0x7ff51, " E", 2)) {
+      guessed_region = PSX_REGION_EU;
+      guessed_region_name = "EU";
+   }
+   else if (!memcmp(data + 0x7ff51, " J", 2) ||
+            crc == 0x18D0F7D8 || crc == 0x3B601FC8 || crc == 0x3539DEF6)
+   {
+      guessed_region = PSX_REGION_JP;
+      guessed_region_name = "JP";
+   }
+
+   if (bios_saved[guessed_region] == NULL) {
+      bios_saved[guessed_region] = strdup(name);
+      if (bios_saved[guessed_region])
+         SysPrintf("found %s BIOS file, crc32 %08x: %s\n", guessed_region_name, crc, path);
+   }
+finish:
+   free(data);
+   if (fp)
+     fclose(fp);
 }
 
 #ifndef VITA
 #include <sys/types.h>
 #include <dirent.h>
 
-static bool find_any_bios(const char *dirpath, char *path, size_t path_size)
+static void find_any_bios(const char *dirpath, char *path, size_t path_size)
 {
-   static const char *substr_pref[] = { "scph", "ps" };
-   static const char *substr_alt[] = { "scph", "ps", "openbios" };
-   DIR *dir;
    struct dirent *ent;
-   bool ret = false;
-   size_t i;
+   DIR *dir;
 
    dir = opendir(dirpath);
    if (dir == NULL)
-      return false;
+      return;
 
-   // try to find a "better" bios
    while ((ent = readdir(dir)))
    {
-      for (i = 0; i < sizeof(substr_pref) / sizeof(substr_pref[0]); i++)
-      {
-         const char *substr = substr_pref[i];
-         if ((strncasecmp(ent->d_name, substr, strlen(substr)) != 0))
-            continue;
-         snprintf(path, path_size, "%s%c%s", dirpath, SLASH, ent->d_name);
-         ret = try_use_bios(path, true);
-         if (ret)
-            goto finish;
-      }
+      snprintf(path, path_size, "%s%c%s", dirpath, SLASH, ent->d_name);
+      try_use_bios(path, path_size, true, false);
+      if (have_all_bios())
+         break;
    }
 
-   // another pass to look for anything fitting, even ps2 bios
-   rewinddir(dir);
-   while ((ent = readdir(dir)))
-   {
-      for (i = 0; i < sizeof(substr_alt) / sizeof(substr_alt[0]); i++)
-      {
-         const char *substr = substr_alt[i];
-         if ((strncasecmp(ent->d_name, substr, strlen(substr)) != 0))
-            continue;
-         snprintf(path, path_size, "%s%c%s", dirpath, SLASH, ent->d_name);
-         ret = try_use_bios(path, false);
-         if (ret)
-            goto finish;
-      }
-   }
-
-
-finish:
    closedir(dir);
-   return ret;
 }
 #else
-#define find_any_bios(...) false
+#define find_any_bios(...)
 #endif
 
 static void check_system_specs(void)
@@ -3528,76 +3668,98 @@ static int init_memcards(void)
    return ret;
 }
 
-static void loadPSXBios(void)
+static bool get_bios_config_hle(void)
 {
-   const char *dir;
-   char path[PATH_MAX];
-   unsigned useHLE = 0;
+   struct retro_variable var = { NULL, };
+   bool use_hle = false;
 
-   const char *bios[] = {
-      "PSXONPSP660", "psxonpsp660",
-      "SCPH101", "scph101",
-      "SCPH5501", "scph5501",
-      "SCPH7001", "scph7001",
-      "SCPH1001", "scph1001"
-   };
-
-   struct retro_variable var = {
-      .key = "pcsx_rearmed_bios",
-      .value = NULL
-   };
-
-   found_bios = 0;
-
+   var.key = "pcsx_rearmed_bios";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp(var.value, "HLE"))
-         useHLE = 1;
+         use_hle = true;
    }
 
-   if (!useHLE)
+   Config.SlowBoot = 0;
+   if (!use_hle)
    {
-      if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir)
+      var.value = NULL;
+      var.key = "pcsx_rearmed_show_bios_bootlogo";
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
       {
-         unsigned i;
-         snprintf(Config.BiosDir, sizeof(Config.BiosDir), "%s", dir);
+         if (strcmp(var.value, "enabled") == 0)
+            Config.SlowBoot = 1;
+         else if (strcmp(var.value, "enabled_no_pcsx") == 0)
+            Config.SlowBoot = 2;
+      }
+   }
+   return use_hle;
+}
 
-         for (i = 0; i < sizeof(bios) / sizeof(bios[0]); i++)
-         {
-            snprintf(path, sizeof(path), "%s%c%s.bin", dir, SLASH, bios[i]);
-            found_bios = try_use_bios(path, true);
-            if (found_bios)
-               break;
+static void prepare_bios(bool use_hle)
+{
+   size_t i, count = ARRAY_SIZE(bios_saved);
+   assert(count == ARRAY_SIZE(Config.Bios));
+   for (i = 0; i < count; i++) {
+      Config.Bios[i][0] = 0;
+      if (bios_saved[i] && !use_hle) {
+         int r = snprintf(Config.Bios[i], sizeof(Config.Bios[i]), "%s", bios_saved[i]);
+         if ((size_t)r >= sizeof(Config.Bios[i])) {
+            LogErr("BIOS '%s' name is too long, discarding\n", bios_saved[i]);
+            Config.Bios[i][0] = 0;
          }
-
-         if (!found_bios)
-            found_bios = find_any_bios(dir, path, sizeof(path));
-      }
-      if (found_bios)
-      {
-         SysPrintf("found BIOS file: %s\n", Config.Bios);
       }
    }
+}
 
-   if (!found_bios)
+static void loadPSXBios(void)
+{
+   char path[PATH_MAX];
+   const char *dir;
+   const char *msg_str = NULL;
+   unsigned duration = 0;
+   const char * const listed_bios[] = {
+      "scph5500", "scph5501", "scph5502",
+      "psxonpsp660", "scph101", "scph7001", "scph1001",
+   };
+   bool use_hle = get_bios_config_hle();
+   enum retro_log_level level = RETRO_LOG_INFO;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir)
    {
-      const char *msg_str;
-      unsigned duration;
-      if (useHLE)
+      unsigned i;
+      snprintf(Config.BiosDir, sizeof(Config.BiosDir), "%s", dir);
+
+      for (i = 0; i < ARRAY_SIZE(listed_bios); i++)
       {
-         msg_str = "BIOS set to \'hle\'";
-         SysPrintf("Using HLE BIOS.\n");
-         // shorter as the user probably intentionally wants to use HLE
-         duration = 700;
+         snprintf(path, sizeof(path), "%s%c%s.bin", dir, SLASH, listed_bios[i]);
+         try_use_bios(path, sizeof(path), true, true);
+         if (have_all_bios())
+            break;
       }
-      else
-      {
-         msg_str = "No PlayStation BIOS file found - add for better compatibility";
-         SysPrintf("No BIOS files found.\n");
-         duration = 3000;
-      }
-      show_notification(msg_str, duration, 2);
+
+      if (i == ARRAY_SIZE(listed_bios))
+         find_any_bios(dir, path, sizeof(path));
    }
+
+   prepare_bios(use_hle);
+
+   if (use_hle)
+   {
+      msg_str = "BIOS set to \'hle\'";
+      SysPrintf("Using HLE BIOS.\n");
+      // shorter as the user probably intentionally wants to use HLE
+      duration = 700;
+   }
+   else if (!bios_saved[0] && !bios_saved[1] && !bios_saved[2])
+   {
+      msg_str = "No PlayStation BIOS file found - add for better compatibility";
+      SysPrintf("No BIOS files found.\n");
+      duration = 3000;
+      level = RETRO_LOG_WARN;
+   }
+   if (msg_str)
+      show_notification(msg_str, duration, 2, level);
 }
 
 void retro_init(void)
@@ -3606,7 +3768,7 @@ void retro_init(void)
    struct retro_rumble_interface rumble;
    int ret;
 
-   log_mem_usage();
+   log_mem_usage(0);
 
    msg_interface_version = 0;
    environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &msg_interface_version);
@@ -3646,7 +3808,7 @@ void retro_init(void)
    // alloc enough for RETRO_PIXEL_FORMAT_XRGB8888
    size_t vout_buf_size = VOUT_MAX_WIDTH * VOUT_MAX_HEIGHT * 4;
 #ifdef _3DS
-   // Place psx vram in linear mem to take advantage of it's supersection mapping.
+   // Place psx vram in linear mem to take advantage of its supersection mapping.
    // The emu allocs 2x (0x201000 to be exact) but doesn't really need that much,
    // so place vout_buf below to also act as an overdraw guard.
    vram_mem = linearMemAlign(1024*1024 + 4096 + vout_buf_size, 4096);
@@ -3705,6 +3867,8 @@ void retro_init(void)
 
 void retro_deinit(void)
 {
+   size_t i;
+
    if (plugins_opened)
    {
       ClosePlugins();
@@ -3732,6 +3896,10 @@ void retro_deinit(void)
 #ifdef GPU_UNAI
    show_advanced_gpu_unai_settings = true;
 #endif
+   for (i = 0; i < ARRAY_SIZE(bios_saved); i++) {
+      free(bios_saved[i]);
+      bios_saved[i] = NULL;
+   }
 
    /* Have to reset disks struct, otherwise
     * fnames/flabels will leak memory */

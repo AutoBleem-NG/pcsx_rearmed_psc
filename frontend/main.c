@@ -22,7 +22,7 @@
 #include <dlfcn.h>
 #endif
 #ifdef HAVE_RTHREADS
-#include "../frontend/libretro-rthreads.h"
+#include "../frontend/pcsxr-threads.h"
 #endif
 
 #include "main.h"
@@ -122,6 +122,7 @@ void emu_set_default_config(void)
 	Config.cycle_multiplier = CYCLE_MULT_DEFAULT;
 	Config.GpuListWalking = -1;
 	Config.FractionalFramerate = -1;
+	Config.AlternativeFlip = -1;
 
 	pl_rearmed_cbs.dithering = 1;
 	pl_rearmed_cbs.gpu_neon.allow_interlace = 2; // auto
@@ -445,14 +446,6 @@ int emu_core_preinit(void)
 	// it may be redefined by -cfg on the command line
 	strcpy(cfgfile_basename, "pcsx.cfg");
 
-#ifdef IOS
-	emuLog = fopen("/User/Documents/pcsxr.log", "w");
-	if (emuLog == NULL)
-		emuLog = fopen("pcsxr.log", "w");
-	if (emuLog == NULL)
-#endif
-	emuLog = stdout;
-
 	log_wrong_cpu();
 
 	SetIsoFile(NULL);
@@ -461,7 +454,7 @@ int emu_core_preinit(void)
 
 	set_default_paths();
 	emu_set_default_config();
-	strcpy(Config.Bios, "HLE");
+	strcpy(Config.Bios[0], "HLE");
 
 	return 0;
 }
@@ -784,7 +777,7 @@ static void toggle_fast_forward(int force_off)
 	static int fast_forward;
 	static int normal_g_opts;
 	static int normal_enhancement_enable;
-	//static int normal_frameskip;
+	static int normal_frameskip;
 
 	if (force_off && !fast_forward)
 		return;
@@ -792,16 +785,17 @@ static void toggle_fast_forward(int force_off)
 	fast_forward = !fast_forward;
 	if (fast_forward) {
 		normal_g_opts = g_opts;
-		//normal_frameskip = pl_rearmed_cbs.frameskip;
+		normal_frameskip = pl_rearmed_cbs.frameskip;
 		normal_enhancement_enable =
 			pl_rearmed_cbs.gpu_neon.enhancement_enable;
 
 		g_opts |= OPT_NO_FRAMELIM;
-		// pl_rearmed_cbs.frameskip = 3; // too broken
+		if (normal_frameskip != 0)
+			pl_rearmed_cbs.frameskip = 3;
 		pl_rearmed_cbs.gpu_neon.enhancement_enable = 0;
 	} else {
 		g_opts = normal_g_opts;
-		//pl_rearmed_cbs.frameskip = normal_frameskip;
+		pl_rearmed_cbs.frameskip = normal_frameskip;
 		pl_rearmed_cbs.gpu_neon.enhancement_enable =
 			normal_enhancement_enable;
 
@@ -888,16 +882,16 @@ int emu_load_state(int slot)
 
 #endif // NO_FRONTEND
 
-static void CALLBACK dummy_lace(void)
+static void CALLBACK dummy_vBlank(int is_vblank, int lcf)
 {
 }
 
 void SysReset() {
 	// rearmed hack: EmuReset() runs some code when real BIOS is used,
 	// but we usually do reset from menu while GPU is not open yet,
-	// so we need to prevent updateLace() call..
-	void *real_lace = GPU_updateLace;
-	GPU_updateLace = dummy_lace;
+	// so we need to prevent vBlank() call...
+	void *real_vbl = GPU_vBlank;
+	GPU_vBlank = dummy_vBlank;
 	g_emu_resetting = 1;
 
 	// reset can run code, timing must be set
@@ -905,7 +899,7 @@ void SysReset() {
 
 	EmuReset();
 
-	GPU_updateLace = real_lace;
+	GPU_vBlank = real_vbl;
 	g_emu_resetting = 0;
 }
 
@@ -914,11 +908,6 @@ void SysClose() {
 	ReleasePlugins();
 
 	StopDebugger();
-
-	if (emuLog != NULL && emuLog != stdout && emuLog != stderr) {
-		fclose(emuLog);
-		emuLog = NULL;
-	}
 }
 
 #ifndef HAVE_LIBRETRO
@@ -928,9 +917,9 @@ void SysPrintf(const char *fmt, ...) {
 	va_list list;
 
 	va_start(list, fmt);
-	vfprintf(emuLog, fmt, list);
+	vfprintf(stdout, fmt, list);
 	va_end(list);
-	fflush(emuLog);
+	//fflush(stdout);
 }
 
 #else

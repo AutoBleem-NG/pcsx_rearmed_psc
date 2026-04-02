@@ -29,6 +29,7 @@
 #include "psxbios.h"
 #include "psxevents.h"
 #include "../include/compiler_features.h"
+#include <stddef.h>
 #include <assert.h>
 
 #ifndef ARRAY_SIZE
@@ -53,8 +54,6 @@ int psxInit() {
 	psxCpu = &psxInt;
 #endif
 
-	Log = 0;
-
 	if (psxMemInit() == -1) return -1;
 
 	return psxCpu->Init();
@@ -66,7 +65,7 @@ void psxReset() {
 
 	psxMemReset();
 
-	memset(&psxRegs, 0, sizeof(psxRegs));
+	memset(&psxRegs, 0, offsetof(psxRegisters, ptrs));
 
 	psxRegs.pc = 0xbfc00000; // Start in bootstrap
 
@@ -85,6 +84,7 @@ void psxReset() {
 	psxCpu->ApplyConfig();
 	psxCpu->Reset();
 
+	padReset();
 	psxHwReset();
 	psxBiosInit();
 
@@ -96,11 +96,6 @@ void psxReset() {
 	}
 	if (Config.HLE || introBypassed)
 		psxBiosSetupBootState();
-
-#ifdef EMU_LOG
-	EMU_LOG("*BIOS END*\n");
-#endif
-	Log = 0;
 }
 
 void psxShutdown() {

@@ -137,9 +137,9 @@ struct retro_core_option_v2_definition option_defs_us[] = {
    },
    {
       "pcsx_rearmed_show_bios_bootlogo",
-      "Show BIOS Boot Logo",
+      "Show BIOS Name/Boot Logo",
       NULL,
-      "When using an official BIOS file, specify whether to show the PlayStation logo upon starting or resetting content. Warning: Enabling the boot logo may reduce game compatibility.",
+      "When using a custom BIOS file, enables the display of its file name in the OSD. Also specifies whether to show the BIOS logo when starting or selecting Reset. Warning: Enabling the logo may reduce game compatibility.",
       NULL,
       "system",
       {
@@ -329,21 +329,21 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "enabled",
 #endif
    },
-#ifdef THREAD_RENDERING
+#ifdef USE_ASYNC_GPU
    {
       "pcsx_rearmed_gpu_thread_rendering",
       "Threaded Rendering",
       NULL,
-      "When enabled, runs GPU commands in a secondary thread. 'Synchronous' improves performance while maintaining proper frame pacing. 'Asynchronous' improves performance even further, but may cause dropped frames and increased latency. Produces best results with games that run natively at less than 60 frames per second.",
+      "When enabled, runs GPU commands in a secondary thread. 'Auto' enables it if at least 2 CPU cores are detected.",
       NULL,
       "video",
       {
+         { "auto", "Auto" },
          { "disabled", NULL },
-         { "sync",     "Synchronous" },
-         { "async",    "Asynchronous" },
+         { "enabled",  NULL },
          { NULL, NULL},
       },
-      "disabled",
+      "auto",
    },
 #endif
    {
@@ -386,6 +386,10 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { "54", NULL },
          { "57", NULL },
          { "60", NULL },
+         { "65", NULL },
+         { "70", NULL },
+         { "75", NULL },
+         { "80", NULL },
          { NULL, NULL },
       },
       "33"
@@ -416,7 +420,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "pcsx_rearmed_display_fps_v2",
       "Display Internal FPS",
       NULL,
-      "Show the internal frame rate at which the emulated PlayStation system is rendering content. Note: Requires on-screen notifications to be enabled in the libretro frontend.",
+      "Show the internal frame rate at which the emulated system is rendering content. Note: Requires on-screen notifications to be enabled in the libretro frontend.",
       NULL,
       "video",
       {
@@ -443,6 +447,21 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "auto",
    },
    {
+      "pcsx_rearmed_alt_flip",
+      "Framebuffer readout",
+      NULL,
+      "Some games make changes to the framebuffer while it's being sent to the display, which is currently not emulated. However this option allows to choose if the emulator takes the video frame before the emulated PSX active display period ('Early') or after ('Late'). Normally this should be left at 'Auto'.",
+      NULL,
+      "video",
+      {
+         { "auto",  "Auto" },
+         { "early", "Early" },
+         { "late",  "Late" },
+         { NULL, NULL },
+      },
+      "auto",
+   },
+   {
       "pcsx_rearmed_rgb32_output",
       "RGB32 output",
       NULL,
@@ -455,6 +474,24 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { NULL, NULL },
       },
       "disabled",
+   },
+   {
+      "pcsx_rearmed_scale_hires",
+      "Hi-Res Downscaling",
+      NULL,
+      "When enabled, games that run in high resolution video modes (480i, 512i) will be downscaled to 320x240 by skipping lines and/or columns. May be useful on some devices with native 240p display resolutions that lack efficient hardware scaling.",
+      NULL,
+      "video",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL},
+      },
+#ifdef _MIYOO
+      "enabled",
+#else
+      "disabled",
+#endif
    },
    {
       "pcsx_rearmed_gpu_slow_llists",
@@ -818,24 +855,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "disabled",
    },
-   {
-      "pcsx_rearmed_gpu_unai_scale_hires",
-      "(GPU) Hi-Res Downscaling",
-      "Hi-Res Downscaling",
-      "When enabled, games that run in high resolution video modes (480i, 512i) will be downscaled to 320x240. Can improve performance, and is recommended on devices with native 240p display resolutions.",
-      NULL,
-      "gpu_unai",
-      {
-         { "disabled", NULL },
-         { "enabled",  NULL },
-         { NULL, NULL},
-      },
-#ifdef _MIYOO
-      "enabled",
-#else
-      "disabled",
-#endif
-   },
 #endif /* GPU_UNAI */
    {
       "pcsx_rearmed_spu_reverb",
@@ -903,7 +922,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled",
    },
-#if P_HAVE_PTHREAD
+#ifdef USE_ASYNC_SPU
    {
       "pcsx_rearmed_spu_thread",
       "Threaded SPU",
@@ -918,7 +937,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "disabled",
    },
-#endif // P_HAVE_PTHREAD
+#endif
    {
       "pcsx_rearmed_show_input_settings",
       "Show Input Settings",

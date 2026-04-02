@@ -1,10 +1,6 @@
 #ifndef __PLUGIN_LIB_H__
 #define __PLUGIN_LIB_H__
 
-#define THREAD_RENDERING_OFF   0
-#define THREAD_RENDERING_SYNC  1
-#define THREAD_RENDERING_ASYNC 2
-
 enum {
 	DKEY_SELECT = 0,
 	DKEY_L3,
@@ -58,6 +54,7 @@ struct rearmed_cbs {
 	void  (*pl_vout_flip)(const void *vram, int vram_offset, int bgr24,
 			      int x, int y, int w, int h, int dims_changed);
 	void  (*pl_vout_close)(void);
+	void  (*cspace_blit)(void *dst, const void *src, int bytes);
 	void *(*mmap)(unsigned int size);
 	void  (*munmap)(void *ptr, unsigned int size);
 	// only used by some frontends
@@ -79,9 +76,11 @@ struct rearmed_cbs {
 	unsigned int *gpu_frame_count;
 	unsigned int *gpu_hcnt;
 	unsigned int flip_cnt; // increment manually if not using pl_vout_flip
-	unsigned int only_16bpp; // platform is 16bpp-only
-	unsigned int thread_rendering;
-	unsigned int dithering; // 0 off, 1 on, 2 force
+	unsigned char only_16bpp; // platform is 16bpp-only
+	unsigned char dithering; // 0 off, 1 on, 2 force
+	unsigned char scale_hires;
+	unsigned char alt_flip;
+	int   thread_rendering; // -1 auto, 0 off, 1 on
 	struct {
 		int   allow_interlace; // 0 off, 1 on, 2 guess
 		int   enhancement_enable;
@@ -99,7 +98,6 @@ struct rearmed_cbs {
 		int lighting;
 		int fast_lighting;
 		int blending;
-		int scale_hires;
 	} gpu_unai;
 	struct {
 		int   dwActFixes;

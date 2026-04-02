@@ -30,6 +30,9 @@
 
 // TODO: implement all system calls, count the exact CPU cycles of system calls.
 
+#include <stdio.h>
+#include <stdarg.h>
+#include <assert.h>
 #include "psxbios.h"
 #include "psxhw.h"
 #include "gpu.h"
@@ -38,7 +41,6 @@
 #include "psxinterpreter.h"
 #include "psxevents.h"
 #include "cdrom.h"
-#include <stdarg.h>
 #include <zlib.h>
 
 #ifndef PSXBIOS_LOG
@@ -330,25 +332,25 @@ static int card_io_delay;
 static u8 loadRam8(u32 addr)
 {
 	assert(!(addr & 0x5f800000));
-	return psxM[addr & 0x1fffff];
+	return psxRegs.ptrs.psxM[addr & 0x1fffff];
 }
 
 static u32 loadRam32(u32 addr)
 {
 	assert(!(addr & 0x5f800000));
-	return SWAP32(*((u32 *)psxM + ((addr & 0x1fffff) >> 2)));
+	return SWAP32(*((u32 *)psxRegs.ptrs.psxM + ((addr & 0x1fffff) >> 2)));
 }
 
 static void *castRam8ptr(u32 addr)
 {
 	assert(!(addr & 0x5f800000));
-	return psxM + (addr & 0x1fffff);
+	return psxRegs.ptrs.psxM + (addr & 0x1fffff);
 }
 
 static void *castRam32ptr(u32 addr)
 {
 	assert(!(addr & 0x5f800003));
-	return psxM + (addr & 0x1ffffc);
+	return psxRegs.ptrs.psxM + (addr & 0x1ffffc);
 }
 
 static void *loadRam8ptr(u32 addr)
@@ -364,13 +366,13 @@ static void *loadRam32ptr(u32 addr)
 static void storeRam8(u32 addr, u8 d)
 {
 	assert(!(addr & 0x5f800000));
-	*((u8 *)psxM + (addr & 0x1fffff)) = d;
+	*((u8 *)psxRegs.ptrs.psxM + (addr & 0x1fffff)) = d;
 }
 
 static void storeRam32(u32 addr, u32 d)
 {
 	assert(!(addr & 0x5f800000));
-	*((u32 *)psxM + ((addr & 0x1fffff) >> 2)) = SWAP32(d);
+	*((u32 *)psxRegs.ptrs.psxM + ((addr & 0x1fffff) >> 2)) = SWAP32(d);
 }
 
 static void mips_return(u32 val)
@@ -512,7 +514,7 @@ static int card_buf_io(int is_write, int port, void *buf, u32 size)
 			SaveMcd(Config.Mcd2, Mcd2Data, offset, size);
 	}
 	else {
-		size_t ram_offset = (s8 *)buf - psxM;
+		size_t ram_offset = (u8 *)buf - psxRegs.ptrs.psxM;
 		memcpy(buf, mcdptr + offset, size);
 		if (ram_offset < 0x200000)
 			psxCpu->Clear(ram_offset, (size + 3) / 4);
@@ -1900,7 +1902,7 @@ static void psxBios_SysDeqIntRP_(u32 priority, u32 chain_rm_eptr);
 
 static void psxBios_EnqueueCdIntr_(void)
 {
-	u32 *ram32 = (u32 *)psxM;
+	u32 *ram32 = (u32 *)psxRegs.ptrs.psxM;
 
 	// traps should already be installed by write_chain()
 	ram32[0x91d0/4] = 0;
@@ -2054,7 +2056,7 @@ static void psxBios_GetSystemInfo() { // b4
 	SysPrintf("psxBios_%s %x\n", biosA0n[0xb4], a0);
 	switch (a0) {
 	case 0:
-	case 1: ret = SWAP32(((u32 *)psxR)[0x100/4 + a0]); break;
+	case 1: ret = SWAP32(((u32 *)psxRegs.ptrs.psxR)[0x100/4 + a0]); break;
 	case 2: ret = 0xbfc0012c; break;
 	case 5: ret = loadRam32(0x60) << 10; break;
 	}
@@ -2401,7 +2403,7 @@ void psxBios_ChangeTh() { // 10
 }
 
 void psxBios_InitPAD() { // 0x12
-	u32 i, *ram32 = (u32 *)psxM;
+	u32 i, *ram32 = (u32 *)psxRegs.ptrs.psxM;
 	PSXBIOS_LOG("psxBios_%s %x %x %x %x\n", biosB0n[0x12], a0, a1, a2, a3);
 
 	// printf("%s", "PS-X Control PAD Driver  Ver 3.0");
@@ -2855,13 +2857,16 @@ void psxBios_nextfile() { // 43
 }
 
 #define burename(mcd) { \
+	char *pa0 = Ra0; \
+	char *pa1 = Ra1; \
+	if (pa0 != INVALID_PTR && pa1 != INVALID_PTR) \
 	for (i=1; i<16; i++) { \
 		int namelen, j, xor = 0; \
 		ptr = Mcd##mcd##Data + 128 * i; \
 		if ((*ptr & 0xF0) != 0x50) continue; \
-		if (strcmp(Ra0+5, ptr+0xa)) continue; \
-		namelen = strlen(Ra1+5); \
-		memcpy(ptr+0xa, Ra1+5, namelen); \
+		if (strcmp(pa0+5, ptr+0xa)) continue; \
+		namelen = strlen(pa1+5); \
+		memcpy(ptr+0xa, pa1+5, namelen); \
 		memset(ptr+0xa+namelen, 0, 0x75-namelen); \
 		for (j=0; j<127; j++) xor^= ptr[j]; \
 		ptr[127] = xor; \
@@ -2943,8 +2948,8 @@ void psxBios_delete() { // 45
 }
 
 void psxBios_InitCARD() { // 4a
-	u8 *ram8 = (u8 *)psxM;
-	u32 *ram32 = (u32 *)psxM;
+	u8 *ram8 = (u8 *)psxRegs.ptrs.psxM;
+	u32 *ram32 = (u32 *)psxRegs.ptrs.psxM;
 	PSXBIOS_LOG("psxBios_%s: %x\n", biosB0n[0x4a], a0);
 	write_chain(ram32 + A_PADCRD_CHN_E/4, 0, 0x49bc, 0x4a4c);
 	//card_error = 0;
@@ -3401,12 +3406,12 @@ void (**biosB0)() = biosC0 + 128;
 static void setup_mips_code()
 {
 	u32 *ptr;
-	ptr = (u32 *)&psxM[A_SYSCALL];
+	ptr = (u32 *)&psxRegs.ptrs.psxM[A_SYSCALL];
 	ptr[0x00/4] = SWAPu32(0x0000000c); // syscall 0
 	ptr[0x04/4] = SWAPu32(0x03e00008); // jr    $ra
 	ptr[0x08/4] = SWAPu32(0x00000000); // nop
 
-	ptr = (u32 *)&psxM[A_EXCEPTION];
+	ptr = (u32 *)&psxRegs.ptrs.psxM[A_EXCEPTION];
 	memset(ptr, 0, 0xc0);              // nops (to be patched by games sometimes)
 	ptr[0x10/4] = SWAPu32(0x8c1a0108); // lw    $k0, (0x108)   // PCB
 	ptr[0x14/4] = SWAPu32(0x00000000); // nop
@@ -3470,7 +3475,7 @@ static void write_chain(u32 *d, u32 next, u32 handler1, u32 handler2)
 
 static void setup_tt(u32 tcb_cnt, u32 evcb_cnt, u32 stack)
 {
-	u32 *ram32 = (u32 *)psxM;
+	u32 *ram32 = (u32 *)psxRegs.ptrs.psxM;
 	u32 s_excb = 0x20, s_evcb, s_pcb = 4, s_tcb;
 	u32 p_excb, p_evcb, p_pcb, p_tcb;
 	u32 i;
@@ -3532,12 +3537,13 @@ static const u32 gpu_ctl_def[] = {
 static const u32 gpu_data_def[] = {
 	0xe100360b, 0xe2000000, 0xe3000800, 0xe4077e7f,
 	0xe5001000, 0xe6000000,
-	0x02000000, 0x00000000, 0x01ff03ff
+	0x02000000, 0x00000000, 0x010003ff,
+	0x02000000, 0x01000000, 0x010003ff
 };
 
 // from 1f801d80
 static const u16 spu_config[] = {
-	0x3fff, 0x37ef, 0x5ebc, 0x5ebc, 0x0000, 0x0000, 0x0000, 0x00a0,
+	0x3fff, 0x37ef, 0x5ebc, 0x5ebc, 0x0000, 0x0000, 0xffff, 0x00ff,
 	0x0000, 0x0000, 0x0000, 0x0000, 0xffff, 0x00ff, 0x0000, 0x0000,
 	0x0000, 0xe128, 0x0000, 0x0200, 0xf0f0, 0xc085, 0x0004, 0x0000,
 	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
@@ -3547,10 +3553,26 @@ static const u16 spu_config[] = {
 	0x1056, 0x0ae1, 0x0ae0, 0x07a2, 0x0464, 0x0232, 0x8000, 0x8000
 };
 
+static void spu_clear_mem(u32 addr, u32 size)
+{
+	u16 buf[16*1024/2];
+	u32 i;
+
+	SPU_writeRegister(0x1f801da6, addr >> 3, psxRegs.cycle);
+	SPU_writeRegister(0x1f801dac, 4, psxRegs.cycle); // transfer control
+	memset(buf, 0, sizeof(buf));
+	for (i = 0; i < size; i += sizeof(buf)) {
+		u32 left = size - i;
+		if (left > sizeof(buf))
+			left = sizeof(buf);
+		SPU_writeDMAMem(buf, left / 2, psxRegs.cycle);
+	}
+}
+
 void psxBiosSetupBootState(void)
 {
 	boolean hle = Config.HLE;
-	u32 *hw = (u32 *)psxH;
+	u32 *hw = (u32 *)psxRegs.ptrs.psxH;
 	int i;
 
 	// see also SetBootRegs()
@@ -3601,9 +3623,22 @@ void psxBiosSetupBootState(void)
 	for (i = 0; i < sizeof(gpu_data_def) / sizeof(gpu_data_def[0]); i++)
 		GPU_writeData(gpu_data_def[i]);
 
-	// spu
+	// spu: channel sample mem for loop 1000-4490
+	spu_clear_mem(0x1000, 0x4490 - 0x1000 + 0x10);
+	{
+		u16 flags = SWAP16(0x300);
+		SPU_writeRegister(0x1f801da6, 0x4490 >> 3, psxRegs.cycle);
+		SPU_writeDMAMem(&flags, 1, psxRegs.cycle);
+	}
+	// spu: clear reverb ram
+	spu_clear_mem(spu_config[0x22/2] << 3, 0x80000 - (spu_config[0x22/2] << 3));
+	// spu regs
 	for (i = 0x1f801d80; i < sizeof(spu_config) / sizeof(spu_config[0]); i++)
 		SPU_writeRegister(0x1f801d80 + i*2, spu_config[i], psxRegs.cycle);
+	for (i = 0; i < 24; i++) {
+		SPU_writeRegister(0x1f801c06 + i*0x10, 0x1000>>3, psxRegs.cycle); // start
+		SPU_writeRegister(0x1f801c0e + i*0x10, 0x1a60>>3, psxRegs.cycle); // loop
+	}
 }
 
 static void hleExc0_0_1();
@@ -3613,6 +3648,18 @@ static void hleExc0_1_2();
 
 #include "sjisfont.h"
 
+void psxBiosResetTables() {
+	memset(biosA0, 0, sizeof(biosA0));
+	// biosB0 is just a ptr to C0
+	memset(biosC0, 0, sizeof(biosC0));
+
+	biosA0[0x03] = biosB0[0x35] = psxBios_write_psxout;
+	biosA0[0x3c] = biosB0[0x3d] = psxBios_putchar_psxout;
+	biosA0[0x3e] = biosB0[0x3f] = psxBios_puts_psxout;
+	// calls putchar() internally so no need to override
+	//biosA0[0x3f] = psxBios_printf_psxout;
+}
+
 void psxBiosInit() {
 	u32 *ptr, *ram32, *rom32;
 	char *romc;
@@ -3621,25 +3668,16 @@ void psxBiosInit() {
 
 	psxRegs.biosBranchCheck = ~0;
 
-	memset(psxM, 0, 0x10000);
-	for(i = 0; i < 256; i++) {
-		biosA0[i] = NULL;
-		biosB0[i] = NULL;
-		biosC0[i] = NULL;
-	}
-	biosA0[0x03] = biosB0[0x35] = psxBios_write_psxout;
-	biosA0[0x3c] = biosB0[0x3d] = psxBios_putchar_psxout;
-	biosA0[0x3e] = biosB0[0x3f] = psxBios_puts_psxout;
-	// calls putchar() internally so no need to override
-	//biosA0[0x3f] = psxBios_printf_psxout;
+	psxBiosResetTables();
+	memset(psxRegs.ptrs.psxM, 0, 0x10000);
 
 	if (!Config.HLE) {
 		char verstr[0x24+1];
-		rom32 = (u32 *)psxR;
-		memcpy(verstr, psxR + 0x12c, 0x24);
+		rom32 = (u32 *)psxRegs.ptrs.psxR;
+		memcpy(verstr, psxRegs.ptrs.psxR + 0x12c, 0x24);
 		verstr[0x24] = 0;
 		SysPrintf("BIOS: %08x, '%s', '%c'\n", SWAP32(rom32[0x100/4]),
-			verstr, psxR[0x7ff52]);
+			verstr, psxRegs.ptrs.psxR[0x7ff52]);
 		return;
 	}
 
@@ -3964,10 +4002,10 @@ void psxBiosInit() {
 
 	// somewhat pretend to be a SCPH1001 BIOS
 	// some games look for these and take an exception if they're missing
-	rom32 = (u32 *)psxR;
+	rom32 = (u32 *)psxRegs.ptrs.psxR;
 	rom32[0x100/4] = SWAP32(0x19951204);
 	rom32[0x104/4] = SWAP32(3);
-	romc = (char *)psxR;
+	romc = (char *)psxRegs.ptrs.psxR;
 	strcpy(romc + 0x108, "PCSX authors");
 	strcpy(romc + 0x12c, "CEX-3000 PCSX HLE"); // see psxBios_GetSystemInfo
 	strcpy(romc + 0x7ff32, "System ROM Version 2.2 12/04/95 A");
@@ -3975,9 +4013,9 @@ void psxBiosInit() {
 
 	// fonts
 	len = 0x80000 - 0x66000;
-	uncompress((Bytef *)(psxR + 0x66000), &len, font_8140, sizeof(font_8140));
+	uncompress((Bytef *)(romc + 0x66000), &len, font_8140, sizeof(font_8140));
 	len = 0x80000 - 0x69d68;
-	uncompress((Bytef *)(psxR + 0x69d68), &len, font_889f, sizeof(font_889f));
+	uncompress((Bytef *)(romc + 0x69d68), &len, font_889f, sizeof(font_889f));
 
 	// trap attempts to call bios directly
 	rom32[0x00000/4] = HLEOP(hleop_dummy);
@@ -3993,7 +4031,7 @@ void psxBiosInit() {
 		Crash Team Racing will softlock after the Sony logo.
 	*/
 
-	ram32 = (u32 *)psxM;
+	ram32 = (u32 *)psxRegs.ptrs.psxM;
 	ram32[0x0000/4] = SWAPu32(0x00000003); // lui   $k0, 0  (overwritten by 3)
 	ram32[0x0004/4] = SWAPu32(0x275a0000 + A_EXCEPTION); // addiu $k0, $k0, 0xc80
 	ram32[0x0008/4] = SWAPu32(0x03400008); // jr    $k0
@@ -4034,12 +4072,12 @@ void psxBiosInit() {
 	// (or rather the funcs listed there)
 	// also trap the destination as some "Cheats Edition" thing overrides the
 	// dispatcher with a wrapper and then jumps to the table entries directly
-	ptr = (u32 *)&psxM[A_A0_TABLE];
+	ptr = (u32 *)&psxRegs.ptrs.psxM[A_A0_TABLE];
 	for (i = 0; i < 256; i++) {
 		ptr[i] = SWAP32(A_A0_TRAPS + i*4);
 		ram32[A_A0_TRAPS/4 + i] = HLEOP(hleop_a0t);
 	}
-	ptr = (u32 *)&psxM[A_B0_TABLE];
+	ptr = (u32 *)&psxRegs.ptrs.psxM[A_B0_TABLE];
 	for (i = 0; i < 256; i++) {
 		ptr[i] = SWAP32(A_B0_TRAPS + i*4);
 		ram32[A_B0_TRAPS/4 + i] = HLEOP(hleop_b0t);
@@ -4060,7 +4098,7 @@ void psxBiosInit() {
 	ram32[0x4c64/4] = SWAP32(0x03e00008); // jr $ra
 	ram32[0x4c68/4] = SWAP32(0xac000000 + A_PAD_IRQR_ENA); // sw $0, ...
 
-	ptr = (u32 *)&psxM[A_C0_TABLE];
+	ptr = (u32 *)&psxRegs.ptrs.psxM[A_C0_TABLE];
 	for (i = 0; i < 256/2; i++) {
 		ptr[i] = SWAP32(A_C0_TRAPS + i*4);
 		ram32[A_C0_TRAPS/4 + i] = HLEOP(hleop_c0t);
@@ -4081,6 +4119,8 @@ void psxBiosInit() {
 	ram32[A_RCNT_VBL_ACK/4 + 2] = SWAP32(1);
 	ram32[A_RCNT_VBL_ACK/4 + 3] = SWAP32(1);
 	ram32[A_RND_SEED/4] = SWAPu32(0x24040001); // was 0xac20cc00
+
+	SysPrintf("HLE BIOS initialized.\n");
 }
 
 void psxBiosShutdown() {
@@ -4098,7 +4138,7 @@ void psxBiosCnfLoaded(u32 tcb_cnt, u32 evcb_cnt, u32 stack) {
 
 #define psxBios_PADpoll(pad) { \
 	int i, more_data = 0; \
-	PAD##pad##_startPoll(pad); \
+	PAD##pad##_startPoll(); \
 	pad_buf##pad[1] = PAD##pad##_poll(0x42, &more_data); \
 	pad_buf##pad[0] = more_data ? 0 : 0xff; \
 	PAD##pad##_poll(0, &more_data); \
@@ -4539,7 +4579,7 @@ void psxBiosCheckExe(u32 t_addr, u32 t_size, int loading_state)
 	u32 start = t_addr & 0x1ffffc;
 	u32 end = (start + t_size) & 0x1ffffc;
 	u32 buf[sizeof(pattern) / sizeof(u32)];
-	const u32 *r32 = (u32 *)(psxM + start);
+	const u32 *r32 = (u32 *)(psxRegs.ptrs.psxM + start);
 	u32 i, j;
 
 	if (end <= start)
@@ -4590,8 +4630,8 @@ void psxBiosCheckBranch(void)
 }
 
 #define bfreeze(ptr, size) { \
-	if (Mode == 1) memcpy(&psxR[base], ptr, size); \
-	if (Mode == 0) memcpy(ptr, &psxR[base], size); \
+	if (Mode == 1) memcpy(&psxRegs.ptrs.psxR[base], ptr, size); \
+	if (Mode == 0) memcpy(ptr, &psxRegs.ptrs.psxR[base], size); \
 	base += size; \
 }
 

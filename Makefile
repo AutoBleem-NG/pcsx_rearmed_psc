@@ -11,11 +11,18 @@ HAVE_CHD ?= 1
 ifneq ($(DEBUG)$(DEBUG_SYMS), 00)
 CFLAGS += -ggdb
 endif
+CFLAGS_OPT ?= -Ofast
 ifneq ($(DEBUG), 1)
-CFLAGS += -O3
+CFLAGS += $(CFLAGS_OPT)
 ifneq ($(ASSERTS), 1)
 CFLAGS += -DNDEBUG
 endif
+endif
+ifeq ($(LOG_UNHANDLED), 1)
+CFLAGS += -DLOG_UNHANDLED
+endif
+ifndef NO_AUTODEPS
+AUTODEPFLAGS += -MMD -MP
 endif
 ifeq ($(DEBUG_ASAN), 1)
 CFLAGS += -fsanitize=address
@@ -68,7 +75,6 @@ LDFLAGS += $(FSECTIONS_LDFLAGS)
 endif
 endif # NO_FSECTIONS
 CFLAGS += -DP_HAVE_MMAP=$(if $(NO_MMAP),0,1) \
-	  -DP_HAVE_PTHREAD=$(if $(NO_PTHREAD),0,1) \
 	  -DP_HAVE_POSIX_MEMALIGN=$(if $(NO_POSIX_MEMALIGN),0,1) \
 	  -DDISABLE_MEM_LUTS=0
 CXXFLAGS += $(CFLAGS)
@@ -81,7 +87,8 @@ OBJS += libpcsxcore/cdriso.o libpcsxcore/cdrom.o libpcsxcore/cdrom-async.o \
 	libpcsxcore/psxcommon.o libpcsxcore/psxcounters.o libpcsxcore/psxdma.o \
 	libpcsxcore/psxhw.o libpcsxcore/psxinterpreter.o libpcsxcore/psxmem.o \
 	libpcsxcore/psxevents.o libpcsxcore/r3000a.o \
-	libpcsxcore/sio.o libpcsxcore/spu.o libpcsxcore/gpu.o
+	libpcsxcore/sio.o libpcsxcore/spu.o libpcsxcore/gpu.o \
+	libpcsxcore/pad.o
 OBJS += libpcsxcore/gte.o libpcsxcore/gte_nf.o libpcsxcore/gte_divider.o
 #OBJS += libpcsxcore/debug.o libpcsxcore/socket.o libpcsxcore/disr3000a.o
 
@@ -122,6 +129,16 @@ ifeq "$(USE_ASYNC_CDROM)" "1"
 libpcsxcore/cdrom-async.o: CFLAGS += -DUSE_ASYNC_CDROM
 frontend/libretro.o: CFLAGS += -DUSE_ASYNC_CDROM
 frontend/menu.o: CFLAGS += -DUSE_ASYNC_CDROM
+USE_RTHREADS := 1
+endif
+ifeq "$(USE_ASYNC_GPU)" "1"
+frontend/libretro.o: CFLAGS += -DUSE_ASYNC_GPU
+frontend/menu.o: CFLAGS += -DUSE_ASYNC_GPU
+USE_RTHREADS := 1
+endif
+ifeq "$(USE_ASYNC_SPU)" "1"
+frontend/libretro.o: CFLAGS += -DUSE_ASYNC_SPU
+frontend/menu.o: CFLAGS += -DUSE_ASYNC_SPU
 USE_RTHREADS := 1
 endif
 
@@ -186,12 +203,11 @@ endif
 else ifeq "$(DYNAREC)" "ari64"
 OBJS += libpcsxcore/new_dynarec/new_dynarec.o
 OBJS += libpcsxcore/new_dynarec/pcsxmem.o
+libpcsxcore/new_dynarec/new_dynarec.o: CFLAGS += -O2 # less bloat
  ifeq "$(ARCH)" "arm"
  OBJS += libpcsxcore/new_dynarec/linkage_arm.o
- libpcsxcore/new_dynarec/new_dynarec.o: libpcsxcore/new_dynarec/assem_arm.c
  else ifneq (,$(findstring $(ARCH),aarch64 arm64))
  OBJS += libpcsxcore/new_dynarec/linkage_arm64.o
- libpcsxcore/new_dynarec/new_dynarec.o: libpcsxcore/new_dynarec/assem_arm64.c
  else
  $(error no dynarec support for architecture $(ARCH))
  endif
@@ -205,7 +221,6 @@ else
 CFLAGS += -DDRC_DISABLE
 endif
 OBJS += libpcsxcore/new_dynarec/emu_if.o
-libpcsxcore/new_dynarec/new_dynarec.o: libpcsxcore/new_dynarec/pcsxmem_inline.c
 ifdef DRC_DBG
 libpcsxcore/new_dynarec/emu_if.o: CFLAGS += -D_FILE_OFFSET_BITS=64
 CFLAGS += -DDRC_DBG
@@ -218,15 +233,15 @@ endif
 OBJS += plugins/dfsound/dma.o plugins/dfsound/freeze.o \
 	plugins/dfsound/registers.o plugins/dfsound/spu.o \
 	plugins/dfsound/out.o plugins/dfsound/nullsnd.o
-plugins/dfsound/spu.o: plugins/dfsound/adsr.c plugins/dfsound/reverb.c \
-	plugins/dfsound/xa.c
 ifeq "$(ARCH)" "arm"
 OBJS += plugins/dfsound/arm_utils.o
 endif
 ifeq "$(HAVE_C64_TOOLS)" "1"
 plugins/dfsound/%.o: CFLAGS += -DC64X_DSP -DWANT_THREAD_CODE
-plugins/dfsound/spu.o: plugins/dfsound/spu_c64x.c
 frontend/menu.o: CFLAGS += -DC64X_DSP
+endif
+ifeq "$(USE_ASYNC_SPU)" "1"
+plugins/dfsound/%.o: CFLAGS += -DUSE_ASYNC_SPU
 endif
 ifneq ($(findstring oss,$(SOUND_DRIVERS)),)
 plugins/dfsound/out.o: CFLAGS += -DHAVE_OSS
@@ -259,11 +274,14 @@ endif
 
 # builtin gpu
 OBJS += plugins/gpulib/gpu.o plugins/gpulib/vout_pl.o plugins/gpulib/prim.o
+ifeq "$(USE_ASYNC_GPU)" "1"
+OBJS += plugins/gpulib/gpu_async.o
+plugins/gpulib/%.o: CFLAGS += -DUSE_ASYNC_GPU
+endif
 ifeq "$(BUILTIN_GPU)" "neon"
 CFLAGS += -DGPU_NEON
 OBJS += plugins/gpu_neon/psx_gpu_if.o
 plugins/gpu_neon/psx_gpu_if.o: CFLAGS += -DNEON_BUILD -DTEXTURE_CACHE_4BPP -DTEXTURE_CACHE_8BPP
-plugins/gpu_neon/psx_gpu_if.o: plugins/gpu_neon/psx_gpu/*.c
 frontend/menu.o frontend/plugin_lib.o: CFLAGS += -DBUILTIN_GPU_NEON
  ifeq "$(HAVE_NEON_ASM)" "1"
  OBJS += plugins/gpu_neon/psx_gpu/psx_gpu_arm_neon.o
@@ -277,13 +295,8 @@ ifeq "$(BUILTIN_GPU)" "peops"
 CFLAGS += -DGPU_PEOPS
 # note: code is not safe for strict-aliasing? (Castlevania problems)
 plugins/dfxvideo/gpulib_if.o: CFLAGS += -fno-strict-aliasing
-plugins/dfxvideo/gpulib_if.o: plugins/dfxvideo/prim.c plugins/dfxvideo/soft.c
 frontend/menu.o frontend/plugin_lib.o: CFLAGS += -DBUILTIN_GPU_PEOPS
 OBJS += plugins/dfxvideo/gpulib_if.o
-ifeq "$(THREAD_RENDERING)" "1"
-CFLAGS += -DTHREAD_RENDERING
-OBJS += plugins/gpulib/gpulib_thread_if.o
-endif
 endif
 
 ifeq "$(BUILTIN_GPU)" "unai"
@@ -292,10 +305,6 @@ CFLAGS += -DUSE_GPULIB=1
 OBJS += plugins/gpu_unai/gpulib_if.o
 ifeq "$(ARCH)" "arm"
 OBJS += plugins/gpu_unai/gpu_arm.o
-endif
-ifeq "$(THREAD_RENDERING)" "1"
-CFLAGS += -DTHREAD_RENDERING
-OBJS += plugins/gpulib/gpulib_thread_if.o
 endif
 ifneq "$(GPU_UNAI_NO_OLD)" "1"
 OBJS += plugins/gpu_unai/old/if.o
@@ -416,7 +425,6 @@ USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "maemo"
 OBJS += maemo/hildon.o maemo/main.o maemo/maemo_xkb.o frontend/pl_gun_ts.o
-maemo/%.o: maemo/%.c
 USE_PLUGIN_LIB = 1
 LDFLAGS += $(shell pkg-config --libs hildon-1 libpulse)
 CFLAGS += $(shell pkg-config --cflags hildon-1) -DHAVE_TSLIB
@@ -453,7 +461,7 @@ INC_LIBRETRO_COMMON := 1
 endif # $(PLATFORM) == "libretro"
 
 ifeq "$(USE_RTHREADS)" "1"
-OBJS += frontend/libretro-rthreads.o
+OBJS += frontend/pcsxr-threads.o
 OBJS += deps/libretro-common/features/features_cpu.o
 frontend/main.o: CFLAGS += -DHAVE_RTHREADS
 INC_LIBRETRO_COMMON := 1
@@ -478,7 +486,6 @@ ifeq "$(USE_FRONTEND)" "1"
 OBJS += frontend/menu.o
 OBJS += frontend/libpicofe/input.o
 frontend/libpicofe/input.o: CFLAGS += -Wno-array-bounds
-frontend/menu.o: frontend/libpicofe/menu.c
 ifeq "$(HAVE_TSLIB)" "1"
 frontend/%.o: CFLAGS += -DHAVE_TSLIB
 OBJS += frontend/pl_gun_ts.o
@@ -505,15 +512,21 @@ frontend/libpicofe/%.c:
 	@exit 1
 
 libpcsxcore/gte_nf.o: libpcsxcore/gte.c
-	$(CC) -c -o $@ $^ $(CFLAGS) -DFLAGLESS
+	$(CC) -c -o $@ $< $(CFLAGS) $(AUTODEPFLAGS) -DFLAGLESS
 
 include/revision.h: FORCE
 	@(git describe --always || echo) | sed -e 's/.*/#define REV "\0"/' > $@_
 	@diff -q $@_ $@ > /dev/null 2>&1 || cp $@_ $@
 	@rm $@_
 
+%.o: %.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(AUTODEPFLAGS) -c $< -o $@
+
+%.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(AUTODEPFLAGS) -c $< -o $@
+
 %.o: %.S
-	$(CC_AS) $(CFLAGS) -c $^ -o $@
+	$(CC_AS) $(CPPFLAGS) $(CFLAGS) $(AUTODEPFLAGS) -c $< -o $@
 
 
 target_: $(TARGET)
@@ -530,7 +543,7 @@ else
 endif
 
 clean: $(PLAT_CLEAN) clean_plugins
-	$(RM) $(TARGET) *.o $(OBJS) $(TARGET).map include/revision.h
+	$(RM) $(TARGET) *.o $(OBJS) $(OBJS:.o=.d) $(TARGET).map include/revision.h
 
 ifneq ($(PLUGINS),)
 plugins_: $(PLUGINS)
@@ -548,6 +561,11 @@ clean_plugins:
 else
 plugins_:
 clean_plugins:
+endif
+
+ifndef NO_AUTODEPS
+$(OBJS:.o=.d): ;
+-include $(OBJS:.o=.d)
 endif
 
 .PHONY: all clean target_ plugins_ clean_plugins FORCE

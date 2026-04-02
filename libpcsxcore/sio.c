@@ -21,6 +21,7 @@
 * SIO functions.
 */
 
+#include <stdio.h>
 #include "misc.h"
 #include "psxcounters.h"
 #include "psxevents.h"
@@ -207,8 +208,8 @@ void sioWrite8(unsigned char value) {
 			StatReg |= RX_RDY;		// Transfer is Ready
 
 			switch (CtrlReg & 0x2002) {
-				case 0x0002: buf[0] = PAD1_startPoll(1); break;
-				case 0x2002: buf[0] = PAD2_startPoll(2); break;
+				case 0x0002: buf[0] = PAD1_startPoll(); break;
+				case 0x2002: buf[0] = PAD2_startPoll(); break;
 			}
 			bufcount = 1;
 			parp = 0;
@@ -679,10 +680,11 @@ void ConvertMcd(char *mcd, char *data) {
 }
 
 void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
-	char *data = NULL, *ptr, *str, *sstr;
+	unsigned char *data = NULL, *ptr;
+	char *str, *sstr;
 	unsigned short clut[16];
 	unsigned short c;
-	int i, x;
+	int i, s, x, skip;
 
 	memset(Info, 0, sizeof(McdBlock));
 
@@ -692,8 +694,8 @@ void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
 	if (McdDisable[mcd - 1])
 		return;
 
-	if (mcd == 1) data = Mcd1Data;
-	if (mcd == 2) data = Mcd2Data;
+	if (mcd == 1) data = (unsigned char *)Mcd1Data;
+	if (mcd == 2) data = (unsigned char *)Mcd2Data;
 
 	ptr = data + block * 8192 + 2;
 
@@ -706,6 +708,7 @@ void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
 	str = Info->Title;
 	sstr = Info->sTitle;
 
+	s = skip = 0;
 	for (i = 0; i < 48; i++) {
 		c = *(ptr) << 8;
 		c |= *(ptr + 1);
@@ -731,12 +734,14 @@ void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
 		else if (c == 0x816E) c = ']';
 		else if (c == 0x817C) c = '-';
 		else {
-			str[i] = ' ';
+			if (!skip++)
+				str[s++] = ' ';
 			sstr[x++] = *ptr++; sstr[x++] = *ptr++;
 			continue;
 		}
 
-		str[i] = sstr[x++] = c;
+		skip = 0;
+		str[s++] = sstr[x++] = c;
 		ptr += 2;
 	}
 
@@ -744,20 +749,16 @@ void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
 	trim(sstr);
 
 	ptr = data + block * 8192 + 0x60; // icon palette data
-
-	for (i = 0; i < 16; i++) {
-		clut[i] = *((unsigned short *)ptr);
-		ptr += 2;
-	}
+	memcpy(clut, ptr, 16*2);
 
 	for (i = 0; i < Info->IconCount; i++) {
 		short *icon = &Info->Icon[i * 16 * 16];
 
 		ptr = data + block * 8192 + 128 + 128 * i; // icon data
 
-		for (x = 0; x < 16 * 16; x++) {
+		for (x = 0; x < 16 * 16; ) {
 			icon[x++] = clut[*ptr & 0xf];
-			icon[x] = clut[*ptr >> 4];
+			icon[x++] = clut[*ptr >> 4];
 			ptr++;
 		}
 	}
@@ -767,9 +768,9 @@ void GetMcdBlockInfo(int mcd, int block, McdBlock *Info) {
 	Info->Flags = *ptr;
 
 	ptr += 0xa;
-	strncpy(Info->ID, ptr, 12);
+	strncpy(Info->ID, (char *)ptr, 12);
 	ptr += 12;
-	strncpy(Info->Name, ptr, 16);
+	strncpy(Info->Name, (char *)ptr, 16);
 }
 
 int sioFreeze(void *f, int Mode) {

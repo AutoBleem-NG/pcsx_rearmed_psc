@@ -6,6 +6,7 @@
  */
 
 #include <stdio.h>
+#include <assert.h>
 
 #include "emu_if.h"
 #include "pcsxmem.h"
@@ -22,7 +23,7 @@
 #define FLAGLESS
 #include "../gte.h"
 #if defined(NDRC_THREAD) && !defined(DRC_DISABLE) && !defined(LIGHTREC)
-#include "../../frontend/libretro-rthreads.h"
+#include "../../frontend/pcsxr-threads.h"
 #include "features/features_cpu.h"
 #include "retro_timers.h"
 #endif
@@ -59,23 +60,27 @@ void ndrc_freeze(void *f, int mode)
 		SaveFuncs.write(f, addrs, size);
 	}
 	else {
-		bytes = SaveFuncs.read(f, header, sizeof(header));
-		if (bytes != sizeof(header) || strcmp(header, header_save)) {
-			if (bytes > 0)
-				SaveFuncs.seek(f, -bytes, SEEK_CUR);
-			return;
-		}
-		SaveFuncs.read(f, &size, sizeof(size));
-		if (size <= 0)
-			return;
-		if (size > sizeof(addrs)) {
-			bytes = size - sizeof(addrs);
-			SaveFuncs.seek(f, bytes, SEEK_CUR);
-			size = sizeof(addrs);
-		}
-		bytes = SaveFuncs.read(f, addrs, size);
-		if (bytes != size)
-			return;
+		do {
+			bytes = SaveFuncs.read(f, header, sizeof(header));
+			if (bytes != sizeof(header) || strcmp(header, header_save)) {
+				if (bytes > 0)
+					SaveFuncs.seek(f, -bytes, SEEK_CUR);
+				break;
+			}
+			SaveFuncs.read(f, &size, sizeof(size));
+			if (size <= 0) {
+				size = 0;
+				break;
+			}
+			if (size > sizeof(addrs)) {
+				bytes = size - sizeof(addrs);
+				SaveFuncs.seek(f, bytes, SEEK_CUR);
+				size = sizeof(addrs);
+			}
+			bytes = SaveFuncs.read(f, addrs, size);
+			if (bytes != size)
+				size = 0;
+		} while (0);
 
 		if (psxCpu != &psxInt)
 			new_dynarec_load_blocks(addrs, size);
@@ -290,6 +295,12 @@ static void ari64_notify(enum R3000Anote note, void *data) {
 		ari64_on_ext_change(data == NULL, 0);
 		psxInt.Notify(note, data);
 		break;
+	case R3000ACPU_NOTIFY_AFTER_LOAD_STATE:
+		// no invalidate since ndrc_freeze() already did it
+		new_dyna_pcsx_mem_reset();
+		new_dyna_pcsx_mem_load_state();
+		psxInt.Notify(note, data);
+		break;
 	}
 }
 
@@ -487,7 +498,7 @@ static int ari64_thread_check_range(unsigned int start, unsigned int end)
 	return 1;
 }
 
-static void ari64_compile_thread(void *unused)
+static STRHEAD_RET_TYPE ari64_compile_thread(void *unused)
 {
 	struct ht_entry *hash_table =
 		*(void **)((char *)dynarec_local + LO_hash_table_ptr);
@@ -511,6 +522,7 @@ static void ari64_compile_thread(void *unused)
 	}
 	slock_unlock(ndrc_g.thread.lock);
 	(void)target;
+	STRHEAD_RETURN();
 }
 
 static void ari64_thread_shutdown(void)
@@ -614,7 +626,7 @@ static int ari64_init()
 #ifdef DRC_DBG
 	memcpy(gte_handlers_nf, gte_handlers, sizeof(gte_handlers_nf));
 #endif
-	psxH_ptr = psxH;
+	psxH_ptr = psxRegs.ptrs.psxH;
 	zeromem_ptr = zero_mem;
 	scratch_buf_ptr = scratch_buf; // for gte_neon.S
 
@@ -688,15 +700,15 @@ static u32 memcheck_read(u32 a)
 {
 	if ((a >> 16) == 0x1f80)
 		// scratchpad/IO
-		return *(u32 *)(psxH + (a & 0xfffc));
+		return *(u32 *)(psxRegs.ptrs.psxH + (a & 0xfffc));
 
 	if ((a >> 16) == 0x1f00)
 		// parallel
-		return *(u32 *)(psxP + (a & 0xfffc));
+		return *(u32 *)(psxRegs.ptrs.psxP + (a & 0xfffc));
 
 //	if ((a & ~0xe0600000) < 0x200000)
 	// RAM
-	return *(u32 *)(psxM + (a & 0x1ffffc));
+	return *(u32 *)(psxRegs.ptrs.psxM + (a & 0x1ffffc));
 }
 
 #if 0
@@ -752,8 +764,8 @@ void do_insn_trace(void)
 
 #if 0
 	if (psxRegs.cycle == 190230) {
-		dump_mem("/mnt/ntz/dev/pnd/tmp/psxram_i.dump", psxM, 0x200000);
-		dump_mem("/mnt/ntz/dev/pnd/tmp/psxregs_i.dump", psxH, 0x10000);
+		dump_mem("/mnt/ntz/dev/pnd/tmp/psxram_i.dump", psxRegs.ptrs.psxM, 0x200000);
+		dump_mem("/mnt/ntz/dev/pnd/tmp/psxregs_i.dump", psxRegs.ptrs.psxH, 0x10000);
 		printf("dumped\n");
 		exit(1);
 	}
@@ -928,8 +940,8 @@ void do_insn_cmp(void)
 			i+8, allregs_p[i+8], i+16, allregs_p[i+16], i+24, allregs_p[i+24]);
 	printf("PC: %08x/%08x, cycle %u, next %u\n", psxRegs.pc, ppc,
 		psxRegs.cycle, psxRegs.next_interupt);
-	//dump_mem("/tmp/psxram.dump", psxM, 0x200000);
-	//dump_mem("/mnt/ntz/dev/pnd/tmp/psxregs.dump", psxH, 0x10000);
+	//dump_mem("/tmp/psxram.dump", psxRegs.ptrs.psxM, 0x200000);
+	//dump_mem("/mnt/ntz/dev/pnd/tmp/psxregs.dump", psxRegs.ptrs.psxH, 0x10000);
 	exit(1);
 ok:
 	//psxRegs.cycle = rregs.cycle + 2; // sync timing

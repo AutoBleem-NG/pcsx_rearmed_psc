@@ -94,6 +94,14 @@ static const char * const f1_hack_db[] =
 	"SCES03404", "SCES03423", "SCES03424", "SCES03524",
 };
 
+static const char * const alt_flip_db[] =
+{
+	/* Darius Gaiden (Japan) */
+	"SLPS00574", "SLPM80054",
+	/* NFS3 */
+	"SLUS00620",
+};
+
 #define HACK_ENTRY(var, list) \
 	{ #var, &Config.hacks.var, list, ARRAY_SIZE(list) }
 
@@ -112,6 +120,7 @@ hack_db[] =
 	HACK_ENTRY(dualshock_init_analog, dualshock_init_analog_hack_db),
 	HACK_ENTRY(fractional_Framerate, fractional_Framerate_hack_db),
 	HACK_ENTRY(f1, f1_hack_db),
+	HACK_ENTRY(alt_flip, alt_flip_db),
 };
 
 static const struct
@@ -162,6 +171,10 @@ cycle_multiplier_overrides[] =
 	/* Legend of Legaia - some attack moves lag and cause a/v desync */
 	{ 160, { "SCUS94254", "SCUS94366", "SCES01752" } },
 	{ 160, { "SCES01944", "SCES01945", "SCES01946", "SCES01947" } },
+	/* Tunguska: Legend of Faith - 2x too fast */
+	{ 232, { "SLES03298" } },
+	/* Riichi Mahjong - hangs */
+	{ 200, { "SLPS03023" } },
 };
 
 static const struct

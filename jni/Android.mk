@@ -7,6 +7,8 @@ $(shell cd "$(LOCAL_PATH)" && (rm ../include/revision.h_))
 
 USE_LIBRETRO_VFS ?= 0
 USE_ASYNC_CDROM ?= 1
+USE_ASYNC_GPU ?= 1
+USE_ASYNC_SPU ?= 1
 USE_RTHREADS ?= 0
 NDRC_THREAD ?= 1
 
@@ -35,6 +37,7 @@ SOURCES_C := $(CORE_DIR)/cdriso.c \
              $(CORE_DIR)/decode_xa.c \
              $(CORE_DIR)/mdec.c \
              $(CORE_DIR)/misc.c \
+             $(CORE_DIR)/pad.c \
              $(CORE_DIR)/plugins.c \
              $(CORE_DIR)/ppf.c \
              $(CORE_DIR)/psxbios.c \
@@ -175,6 +178,9 @@ endif
   SOURCES_C   += $(DYNAREC_DIR)/emu_if.c
 
 ifeq ($(HAVE_LIGHTREC),1)
+  ifeq ($(findstring clang,$(notdir $(TARGET_CC))),clang)
+    COREFLAGS += -Wno-initializer-overrides
+  endif
   COREFLAGS   += -DLIGHTREC -DLIGHTREC_STATIC -DLIGHTREC_CODE_INV=0
   EXTRA_INCLUDES += $(DEPS_DIR)/lightning/include \
 		    $(DEPS_DIR)/lightrec \
@@ -237,9 +243,18 @@ ifeq ($(USE_ASYNC_CDROM),1)
 COREFLAGS += -DUSE_ASYNC_CDROM
 USE_RTHREADS := 1
 endif
+ifeq ($(USE_ASYNC_GPU),1)
+SOURCES_C += $(GPU_DIR)/gpu_async.c
+COREFLAGS += -DUSE_ASYNC_GPU
+USE_RTHREADS := 1
+endif
+ifeq ($(USE_ASYNC_SPU),1)
+COREFLAGS += -DUSE_ASYNC_SPU
+USE_RTHREADS := 1
+endif
 ifeq ($(USE_RTHREADS),1)
 SOURCES_C += \
-             $(FRONTEND_DIR)/libretro-rthreads.c \
+             $(FRONTEND_DIR)/pcsxr-threads.c \
              $(LIBRETRO_COMMON)/features/features_cpu.c
 COREFLAGS += -DHAVE_RTHREADS
 endif
