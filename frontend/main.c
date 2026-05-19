@@ -614,8 +614,8 @@ int main(int argc, char *argv[])
 			if (i+1 >= argc) break;
 			strncpy(isofilename, argv[++i], MAXPATHLEN);
 			if (isofilename[0] != '/') {
-				getcwd(path, MAXPATHLEN);
-				if (strlen(path) + strlen(isofilename) + 1 < MAXPATHLEN) {
+				if (getcwd(path, MAXPATHLEN) != NULL &&
+				    strlen(path) + strlen(isofilename) + 1 < MAXPATHLEN) {
 					strcat(path, "/");
 					strcat(path, isofilename);
 					strcpy(isofilename, path);
@@ -670,8 +670,8 @@ int main(int argc, char *argv[])
 		} else {
 			strncpy(file, argv[i], MAXPATHLEN);
 			if (file[0] != '/') {
-				getcwd(path, MAXPATHLEN);
-				if (strlen(path) + strlen(file) + 1 < MAXPATHLEN) {
+				if (getcwd(path, MAXPATHLEN) != NULL &&
+				    strlen(path) + strlen(file) + 1 < MAXPATHLEN) {
 					strcat(path, "/");
 					strcat(path, file);
 					strcpy(file, path);
@@ -713,7 +713,7 @@ int main(int argc, char *argv[])
 	}
 	pcnt_hook_plugins();
 
-	if (OpenPlugins() == -1) {
+	if (OpenPlugins(1) == -1) {
 		return 1;
 	}
 
@@ -980,14 +980,15 @@ static int _OpenPlugins(void) {
 	return 0;
 }
 
-int OpenPlugins() {
+int OpenPlugins(int load_memcards) {
 	int ret;
 
 	while ((ret = _OpenPlugins()) == -2) {
 		ReleasePlugins();
-		LoadMcds(Config.Mcd1, Config.Mcd2);
 		if (LoadPlugins() == -1) return -1;
 	}
+	if (load_memcards)
+		LoadMcds(Config.Mcd1, Config.Mcd2);
 	return ret;
 }
 
