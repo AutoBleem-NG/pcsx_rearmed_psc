@@ -55,6 +55,9 @@
 #endif
 
 #define array_size(x) (sizeof(x) / sizeof(x[0]))
+#define AUTOBLEEM_SET_BY_PCSX_BIOS "SET_BY_PCSX"
+#define AUTOBLEEM_JP_BIOS_NAME "romJP.bin"
+#define AUTOBLEEM_WORLD_BIOS_NAME "romw.bin"
 
 typedef enum
 {
@@ -342,6 +345,28 @@ static void menu_sync_config(void)
 	spu_config.iVolume = 768 + 128 * volume_boost;
 	pl_rearmed_cbs.frameskip = frameskip - 1;
 	pl_timing_prepare(Config.PsxType);
+}
+
+static void menu_apply_autobleem_bios_name(void)
+{
+	const char *isofile;
+	const char *fname;
+	const char *bios;
+
+	if (strcmp(Config.Bios[0], AUTOBLEEM_SET_BY_PCSX_BIOS) != 0)
+		return;
+
+	isofile = GetIsoFile();
+	fname = isofile ? strrchr(isofile, '/') : NULL;
+	fname = fname ? fname + 1 : isofile;
+	bios = fname && strlen(fname) > 2 && fname[2] == 'P' ? AUTOBLEEM_JP_BIOS_NAME
+		: AUTOBLEEM_WORLD_BIOS_NAME;
+
+	snprintf(Config.Bios[PSX_REGION_US], sizeof(Config.Bios[0]), "%s",
+		AUTOBLEEM_WORLD_BIOS_NAME);
+	snprintf(Config.Bios[PSX_REGION_JP], sizeof(Config.Bios[0]), "%s", bios);
+	snprintf(Config.Bios[PSX_REGION_EU], sizeof(Config.Bios[0]), "%s",
+		AUTOBLEEM_WORLD_BIOS_NAME);
 }
 
 static void menu_set_defconfig(void)
@@ -680,6 +705,8 @@ int menu_load_config(int is_game)
 
 		if (config_data[i].len > 8) {
 			parse_str_val(config_data[i].val, config_data[i].len, tmp);
+			if (strcmp(config_data[i].name, "Bios") == 0)
+				menu_apply_autobleem_bios_name();
 			continue;
 		}
 
