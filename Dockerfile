@@ -28,6 +28,7 @@ ARG CT_GLIBC_VERSION=2_23
 ARG CT_GCC_VERSION=9
 
 # UPX version for binary compression
+ARG ENABLE_UPX=0
 ARG UPX_VERSION=5.0.2
 
 # User IDs for crosstool-ng build
@@ -124,14 +125,6 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Download and install UPX for binary compression
-ARG UPX_VERSION
-RUN wget -q https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz && \
-    tar -xf upx-${UPX_VERSION}-amd64_linux.tar.xz && \
-    cp upx-${UPX_VERSION}-amd64_linux/upx /usr/local/bin/ && \
-    chmod +x /usr/local/bin/upx && \
-    rm -rf upx-${UPX_VERSION}-amd64_linux upx-${UPX_VERSION}-amd64_linux.tar.xz
-
 # Install ARM libraries needed for PCSX ReARMed (including EGL/GLES)
 ENV ARM_PACKAGES=" \
     libasound2-dev:armhf \
@@ -209,13 +202,24 @@ ARG GIT_VERSION="AutoBleem-NG"
 RUN mkdir -p include && \
     echo "#define REV \"${GIT_VERSION}\"" > include/revision.h
 
-RUN SDL_CONFIG=/usr/bin/sdl2-config DUMP_CONFIG_LOG=1 make -f Makefile.psc arm JOBS=$(nproc)
+RUN SDL_CONFIG=/usr/bin/sdl2-config DUMP_CONFIG_LOG=1 make -f Makefile.psc arm JOBS=$(nproc) GIT_VERSION="${GIT_VERSION}"
 
-# Compress binary with UPX for smaller size and faster loading
-# Note: Binary is already stripped by -s linker flag in config.mak.psc
-RUN echo "Before UPX:" && ls -la pcsx-ab && \
-    upx -9 pcsx-ab && \
-    echo "After UPX:" && ls -la pcsx-ab
+# Compress release builds with UPX for smaller size and faster loading.
+# Note: Binary is already stripped by -s linker flag in config.mak.psc.
+ARG ENABLE_UPX
+ARG UPX_VERSION
+RUN echo "Before optional UPX:" && ls -la pcsx-ab && \
+    if [ "${ENABLE_UPX}" = "1" ]; then \
+        wget -q https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz && \
+        tar -xf upx-${UPX_VERSION}-amd64_linux.tar.xz && \
+        cp upx-${UPX_VERSION}-amd64_linux/upx /usr/local/bin/ && \
+        chmod +x /usr/local/bin/upx && \
+        rm -rf upx-${UPX_VERSION}-amd64_linux upx-${UPX_VERSION}-amd64_linux.tar.xz && \
+        upx -9 pcsx-ab && \
+        echo "After UPX:" && ls -la pcsx-ab; \
+    else \
+        echo "Skipping UPX compression for non-release build"; \
+    fi
 
 # Collect all outputs to a single directory for easy extraction
 # Note: Audio is built-in (dfsound SPU with SDL backend) - no separate SPU plugin needed

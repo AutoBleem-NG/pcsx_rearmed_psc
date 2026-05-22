@@ -515,7 +515,7 @@ libpcsxcore/gte_nf.o: libpcsxcore/gte.c
 	$(CC) -c -o $@ $< $(CFLAGS) $(AUTODEPFLAGS) -DFLAGLESS
 
 include/revision.h: FORCE
-	@(git describe --always || echo) | sed -e 's/.*/#define REV "\0"/' > $@_
+	@(printf '%s\n' "$(GIT_VERSION)") | sed -e 's/.*/#define REV "\0"/' > $@_
 	@diff -q $@_ $@ > /dev/null 2>&1 || cp $@_ $@
 	@rm $@_
 
@@ -660,16 +660,21 @@ endif
 # PSC Docker build target
 DOCKER_IMAGE ?= pcsx-rearmed-psc
 DOCKER_OUTPUT ?= pcsx_bin
+DOCKER_UPX ?= 0
 
-# Git version: commit hash + dirty flag
+# Version from git tag (e.g., v1.0.0)
+VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 GIT_VERSION := $(shell git describe --always --dirty 2>/dev/null || echo "unknown")
 
-.PHONY: docker docker-build docker-extract
+.PHONY: docker docker-build docker-release-build docker-extract docker-package docker-version
 
 docker: docker-build docker-extract
 
 docker-build:
-	docker build --build-arg GIT_VERSION="$(GIT_VERSION)" -t $(DOCKER_IMAGE) .
+	docker build --build-arg GIT_VERSION="$(GIT_VERSION)" --build-arg ENABLE_UPX="$(DOCKER_UPX)" -t $(DOCKER_IMAGE) .
+
+docker-release-build:
+	docker build --build-arg GIT_VERSION="$(GIT_VERSION)" --build-arg ENABLE_UPX=1 -t $(DOCKER_IMAGE) .
 
 docker-extract:
 	@mkdir -p $(DOCKER_OUTPUT)
@@ -679,3 +684,12 @@ docker-extract:
 	@echo "Binaries extracted to $(DOCKER_OUTPUT)/"
 	@ls -la $(DOCKER_OUTPUT)/
 	@ls -la $(DOCKER_OUTPUT)/plugins/ 2>/dev/null || true
+
+docker-package: docker-release-build docker-extract
+	@cd $(DOCKER_OUTPUT) && zip -r pcsx-ab-psc-$(VERSION).zip pcsx-ab plugins/
+	@echo "Created $(DOCKER_OUTPUT)/pcsx-ab-psc-$(VERSION).zip"
+
+docker-version:
+	@echo "Version: $(VERSION)"
+	@echo "Git: $(GIT_VERSION)"
+	@echo "Package: pcsx-ab-psc-$(VERSION).zip"
