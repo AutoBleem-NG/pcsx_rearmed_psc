@@ -23,6 +23,10 @@ struct psc_settings {
 	int filter;    /* 0=bilinear, 1=nearest */
 	int ratio;     /* 0=4:3, 1=16:9 */
 	int enter;     /* 0=O confirm, 1=X confirm */
+	int has_region;
+	int has_filter;
+	int has_ratio;
+	int has_enter;
 };
 
 /* Initialize PSC settings to defaults */

@@ -5,6 +5,7 @@ void menu_init(void);
 void menu_prepare_emu(void);
 void menu_loop(void);
 void menu_finish(void);
+void menu_set_region(int new_region);
 
 void menu_notify_mode_change(int w, int h, int bpp);
 int  menu_load_cd_image(const char *fname);

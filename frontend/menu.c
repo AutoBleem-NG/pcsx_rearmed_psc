@@ -369,6 +369,12 @@ static void menu_apply_autobleem_bios_name(void)
 		AUTOBLEEM_WORLD_BIOS_NAME);
 }
 
+void menu_set_region(int new_region)
+{
+	region = new_region;
+	menu_sync_config();
+}
+
 static void menu_set_defconfig(void)
 {
 	emu_set_default_config();
