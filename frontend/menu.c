@@ -1638,11 +1638,15 @@ static int menu_loop_plugin_options(int id, int keys)
 {
 	static int sel = 0;
 	int spu_thread_old = spu_config.iUseThread;
+	int spu_thread_available = 0;
 	menu_iopts[0] = Config.SlowBoot;
 	menu_iopts[1] = pl_rearmed_cbs.thread_rendering + 1;
 	menu_iopts[2] = pl_rearmed_cbs.dithering;
 #ifndef C64X_DSP
-	me_enable(e_menu_plugin_options, MA_OPT_SPU_THREAD, pcsxr_sthread_core_count > 1);
+#ifdef USE_ASYNC_SPU
+	spu_thread_available = pcsxr_sthread_core_count > 1;
+#endif
+	me_enable(e_menu_plugin_options, MA_OPT_SPU_THREAD, spu_thread_available);
 #endif
 
 	me_loop(e_menu_plugin_options, &sel);
