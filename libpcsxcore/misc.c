@@ -684,7 +684,7 @@ struct PcsxSaveFuncs SaveFuncs = {
 	zlib_open, zlib_read, zlib_write, zlib_seek, zlib_close
 };
 
-static const char PcsxHeader[32] = "STv4 PCSXra " REV;
+static const char PcsxHeader[32] = "STv4 PCSXra AutoBleem-NG";
 
 // Savestate Versioning!
 // If you make changes to the savestate version, please increment the value below.
