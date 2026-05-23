@@ -45,6 +45,10 @@
 #define SDLK_JOY_BASE 400
 #define SDLK_JOY_BUTTON(n) (SDLK_JOY_BASE + (n))
 
+#ifndef PSC_EJECT_DEBUG
+#define PSC_EJECT_DEBUG 0
+#endif
+
 #ifdef MIYOO
 static const struct in_default_bind in_sdl_defbinds[] = {
   { SDL_SCANCODE_UP,        IN_BINDTYPE_PLAYER12, DKEY_UP },
@@ -108,6 +112,8 @@ static const struct in_default_bind in_sdl_defbinds[] = {
   { SDL_SCANCODE_F8,     IN_BINDTYPE_EMU, SACTION_SWITCH_DISPMODE },
   { SDL_SCANCODE_F11,    IN_BINDTYPE_EMU, SACTION_TOGGLE_FULLSCREEN },
   { SDL_SCANCODE_BACKSPACE, IN_BINDTYPE_EMU, SACTION_FAST_FORWARD },
+  /* PSC physical eject button (KEY_EJECTCD -> SDL_SCANCODE_EJECT) */
+  { SDL_SCANCODE_EJECT,  IN_BINDTYPE_EMU, SACTION_SWAP_CD },
   /* PlayStation Classic controller button bindings (see psc_input.h) */
   { PSC_KEY_TRIANGLE, IN_BINDTYPE_PLAYER12, DKEY_TRIANGLE },
   { PSC_KEY_CIRCLE,   IN_BINDTYPE_PLAYER12, DKEY_CIRCLE },
@@ -200,6 +206,16 @@ static void plugin_update(void)
 static void sdl_event_handler(void *event_)
 {
   SDL_Event *event = event_;
+
+#if PSC_EJECT_DEBUG
+  if (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) {
+    fprintf(stderr, "[eject] SDL_KEY%s sym=0x%x scan=0x%x (EJECT=0x%x)\n",
+        event->type == SDL_KEYDOWN ? "DOWN" : "UP",
+        event->key.keysym.sym, event->key.keysym.scancode,
+        SDL_SCANCODE_EJECT);
+    fflush(stderr);
+  }
+#endif
 
   switch (event->type) {
   case SDL_WINDOWEVENT:

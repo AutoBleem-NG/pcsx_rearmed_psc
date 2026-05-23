@@ -32,12 +32,14 @@
 #include "menu.h"
 #include "plat.h"
 #include "psc_launcher.h"
+#include "psc_eject.h"
 #include "psc_m3u.h"
 #include "../libpcsxcore/misc.h"
 #include "../libpcsxcore/cheat.h"
 #include "../libpcsxcore/sio.h"
 #include "../libpcsxcore/database.h"
 #include "../libpcsxcore/cdrom-async.h"
+#include "../libpcsxcore/cdriso.h"
 #include "../libpcsxcore/new_dynarec/new_dynarec.h"
 #include "../plugins/cdrcimg/cdrcimg.h"
 #include "../plugins/dfsound/spu_config.h"
@@ -238,6 +240,20 @@ do_state_slot:
 			GPU_close();
 			GPU_open(&gpuDisp, "PCSX", NULL);
 		}
+		break;
+	case SACTION_SWAP_CD:
+		ret = menu_swap_cd_multidisk();
+		if (ret == 0) {
+			int disc_n = psc_m3u_active() ? psc_m3u_current() + 1
+			                              : (int)(cdrIsoMultidiskSelect + 1);
+			int disc_total = psc_m3u_active() ? psc_m3u_count()
+			                                  : (int)cdrIsoMultidiskCount;
+			snprintf(hud_msg, sizeof(hud_msg), "DISC %d/%d",
+				disc_n, disc_total);
+		} else {
+			snprintf(hud_msg, sizeof(hud_msg), "SINGLE DISC GAME");
+		}
+		hud_new_msg = 3;
 		break;
 	case SACTION_SCREENSHOT:
 		{
@@ -768,15 +784,20 @@ int main(int argc, char *argv[])
 	pl_start_watchdog();
 #endif
 
+	psc_eject_init();
+
 	while (!g_emu_want_quit)
 	{
 		psxRegs.stop = 0;
 		emu_action = SACTION_NONE;
 
 		psxCpu->Execute(&psxRegs);
+		psc_eject_poll();
 		if (emu_action != SACTION_NONE)
 			do_emu_action();
 	}
+
+	psc_eject_finish();
 
 	printf("Exit..\n");
 	ClosePlugins();

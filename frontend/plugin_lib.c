@@ -719,6 +719,15 @@ static void update_input(void)
 	if (PSC_IS_MENU_COMBO(actions[IN_BINDTYPE_PLAYER12]))
 		emu_act |= (1 << SACTION_ENTER_MENU);
 
+	/* PSC: Select+L1 combo = disc swap (fallback when the physical eject
+	 * button isn't reaching evdev for whatever reason). */
+	{
+		int p12 = actions[IN_BINDTYPE_PLAYER12];
+		int combo = (1 << DKEY_SELECT) | (1 << DKEY_L1);
+		if ((p12 & combo) == combo)
+			emu_act |= (1 << SACTION_SWAP_CD);
+	}
+
 	emu_act &= ~SACTION_GUN_MASK;
 	if (emu_act) {
 		int which = 0;
