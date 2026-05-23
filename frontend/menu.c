@@ -23,6 +23,7 @@
 
 #include "main.h"
 #include "menu.h"
+#include "psc_m3u.h"
 #include "config.h"
 #include "plugin.h"
 #include "plugin_lib.h"
@@ -2152,10 +2153,44 @@ static void draw_frame_main(void)
 	char *out;
 
 	if (CdromId[0] != 0) {
+		int disc_n = 0, disc_total = 0;
+		const char *disc_path = NULL;
 		snprintf(buff, sizeof(buff), "%.32s/%.9s (running as %s, with %s)",
 			 get_cd_label(), CdromId, Config.PsxType ? "PAL" : "NTSC",
 			 Config.HLE ? "HLE" : "BIOS");
 		smalltext_out16(4, 1, buff, 0x105f);
+
+		/* Second line: current image file (+ disc N/M for multi-disc).
+		 * Useful for confirming the eject-button swap and for telling
+		 * apart same-named entries in the library. */
+		if (psc_m3u_active()) {
+			disc_n     = psc_m3u_current() + 1;
+			disc_total = psc_m3u_count();
+			disc_path  = psc_m3u_disc_path(psc_m3u_current());
+		} else if (cdrIsoMultidiskCount > 1) {
+			disc_n     = (int)cdrIsoMultidiskSelect + 1;
+			disc_total = (int)cdrIsoMultidiskCount;
+			disc_path  = GetIsoFile();
+		} else {
+			disc_path  = GetIsoFile();
+		}
+		{
+			const char *base = disc_path;
+			if (base && *base) {
+				const char *slash = strrchr(base, '/');
+				if (slash) base = slash + 1;
+				if (disc_total > 0)
+					snprintf(buff, sizeof(buff), "Disc %d/%d: %.48s",
+						disc_n, disc_total, base);
+				else
+					snprintf(buff, sizeof(buff), "%.56s", base);
+				smalltext_out16(4, 1 + me_sfont_h, buff, 0x105f);
+			} else if (disc_total > 0) {
+				snprintf(buff, sizeof(buff), "Disc %d/%d",
+					disc_n, disc_total);
+				smalltext_out16(4, 1 + me_sfont_h, buff, 0x105f);
+			}
+		}
 	}
 
 	if (ready_to_go) {
@@ -2169,7 +2204,7 @@ static void draw_frame_main(void)
 		}
 		else
 			out = ltime_s;
-		smalltext_out16(4, 1 + me_sfont_h, out, 0x105f);
+		smalltext_out16(4, 1 + 2 * me_sfont_h, out, 0x105f);
 	}
 }
 
@@ -2432,6 +2467,49 @@ static int swap_cd_multidisk(void)
 	return 0;
 }
 
+/* Public wrapper so the PSC eject-button path can trigger a disc swap
+ * without going through the menu UI. Returns 0 if a swap happened, -1 if
+ * the current game is single-disc (caller should silently ignore).
+ *
+ * For PBP-style multidisk we use libpcsxcore's cdrIsoMultidisk machinery.
+ * For .m3u playlists (separate disc files) we swap IsoFile ourselves and
+ * reopen the cdr plugin. */
+int menu_swap_cd_multidisk(void)
+{
+	if (psc_m3u_active()) {
+		const char *old = psc_m3u_disc_path(psc_m3u_current());
+		const char *next = psc_m3u_peek_next();
+		if (!next)
+			return -1;
+		CdromId[0] = '\0';
+		CdromLabel[0] = '\0';
+		set_cd_image(next);
+		/* m3u swaps switch to a different image file (different CHD/ISO),
+		 * so we need the full plugin shutdown+init pair that swap_cd_image
+		 * and libretro's disk_set_image_index use - cdra_close+open alone
+		 * leaves stale async/CD state and can hang the game. */
+		if (ReloadCdromPlugin() < 0) {
+			if (old)
+				set_cd_image(old);
+			menu_update_msg("failed to load cdr plugin");
+			return -1;
+		}
+		if (cdra_open() < 0) {
+			if (old)
+				set_cd_image(old);
+			menu_update_msg("failed to open cdr plugin");
+			return -1;
+		}
+		psc_m3u_advance();
+		SetCdOpenCaseTime(time(NULL) + 2);
+		LidInterrupt();
+		return 0;
+	}
+	if (cdrIsoMultidiskCount <= 1)
+		return -1;
+	return swap_cd_multidisk();
+}
+
 static void load_pcsx_cht(void)
 {
 	static const char *exts[] = { "cht", NULL };
@@ -2484,7 +2562,7 @@ static int main_menu_handler(int id, int keys)
 			return 1;
 		break;
 	case MA_MAIN_SWAP_CD_MULTI:
-		if (swap_cd_multidisk() == 0)
+		if (menu_swap_cd_multidisk() == 0)
 			return 1;
 		break;
 	case MA_MAIN_RUN_BIOS:

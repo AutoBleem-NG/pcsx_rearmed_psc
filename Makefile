@@ -498,6 +498,8 @@ endif
 OBJS += frontend/main.o frontend/plugin.o
 # PSC launcher argument handling
 OBJS += frontend/psc_launcher.o
+# PSC m3u playlist parser (multi-disc CHD/PBP via separate files)
+OBJS += frontend/psc_m3u.o
 frontend/main.o libpcsxcore/misc.o: CFLAGS += -DBUILTIN_GPU=$(BUILTIN_GPU)
 
 frontend/menu.o frontend/main.o: include/revision.h

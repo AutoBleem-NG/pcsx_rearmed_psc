@@ -10,6 +10,7 @@ void menu_set_region(int new_region);
 void menu_notify_mode_change(int w, int h, int bpp);
 int  menu_load_cd_image(const char *fname);
 int  menu_load_config(int is_game);
+int  menu_swap_cd_multidisk(void);
 
 enum g_opts_opts {
 	OPT_SHOWFPS = 1 << 0,

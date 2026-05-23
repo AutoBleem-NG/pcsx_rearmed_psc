@@ -32,6 +32,7 @@
 #include "menu.h"
 #include "plat.h"
 #include "psc_launcher.h"
+#include "psc_m3u.h"
 #include "../libpcsxcore/misc.h"
 #include "../libpcsxcore/cheat.h"
 #include "../libpcsxcore/sio.h"
@@ -588,6 +589,13 @@ static void check_memcards(void)
 
 int main(int argc, char *argv[])
 {
+	/* When launched by AutoBleem, stdout is redirected to a file and
+	 * becomes fully buffered, so SysPrintf() lines (BIOS load, CD
+	 * detection, GPU init etc.) only flush at exit and we lose them when
+	 * debugging crashes. Force line buffering so the log is useful. */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IOLBF, 0);
+
 	char file[MAXPATHLEN] = "";
 	char path[MAXPATHLEN];
 	char isofilename[MAXPATHLEN];
@@ -681,8 +689,15 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (cdfile)
+	if (cdfile) {
+		/* If the launcher passed us an .m3u, parse it and substitute the
+		 * first disc as the file pcsx actually loads. The other discs are
+		 * kept in psc_m3u for the eject-button swap path. */
+		const char *m3u_disc1 = psc_m3u_load(cdfile);
+		if (m3u_disc1)
+			cdfile = m3u_disc1;
 		set_cd_image(cdfile);
+	}
 
 	// frontend stuff
 	// init input but leave probing to platform code,
